@@ -176,6 +176,7 @@ TOPICS = {
     "international": ({"international"}, "international students nri foreign admission"),
     "contact": ({"contact", "admissions"}, "admissions office contact phone email helpline"),
     "about": ({"about"}, "CHRIST University accreditation ranking history"),
+    "apply": ({"admissions"}, "how to apply application process online apply last date"),
 }
 
 
@@ -192,7 +193,12 @@ def topic(name: str):
         seen.add(h.chunk.url)
         out.append({"title": h.chunk.title, "heading": h.chunk.heading, "url": h.chunk.url, "excerpt": h.chunk.text[:700],
                     "external": h.chunk.kind == "external"})
-    return {"topic": name, "results": out}
+    extra = {}
+    if name == "apply":  # the public application portal link most programmes share
+        from collections import Counter
+        top = Counter(p.apply_url for p in _corpus().programmes if p.apply_url).most_common(1)
+        extra["apply_url"] = top[0][0] if top else None
+    return {"topic": name, "results": out, **extra}
 
 
 class EligibilityBody(BaseModel):

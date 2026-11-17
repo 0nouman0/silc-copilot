@@ -154,3 +154,9 @@ def test_dates_topics_and_eligibility_endpoints(client):
 def test_unknown_api_path_is_json_404_not_spa(client):
     r = client.get("/api/nope")
     assert r.status_code == 404 and r.headers["content-type"].startswith("application/json")
+
+
+def test_apply_topic_returns_guidance_and_the_shared_apply_link(client):
+    d = client.get("/api/topic/apply").json()
+    assert d["apply_url"] == "https://espro.christuniversity.in/Application/" and d["results"]
+    assert "apply_url" not in client.get("/api/topic/hostel").json()

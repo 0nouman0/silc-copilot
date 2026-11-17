@@ -4,13 +4,13 @@ import { renderMarkdown } from "./md.js";
 
 const KEY = "silc_chat_v1";
 const ACTIONS = [
-  { t: "Explore programmes", d: "Browse CHRIST's undergraduate, postgraduate and doctoral programmes.", i: "compass", c: "#4f46e5",
+  { href: "/programmes", t: "Explore programmes", d: "Browse CHRIST's undergraduate, postgraduate and doctoral programmes.", i: "compass", c: "#4f46e5",
     p: "Show me the programmes available." },
-  { t: "Check my eligibility", d: "See how your qualifications compare with published criteria.", i: "check", c: "#0d9488",
+  { href: "/eligibility", t: "Check my eligibility", d: "See how your qualifications compare with published criteria.", i: "check", c: "#0d9488",
     p: "Help me check my eligibility for a programme." },
-  { t: "Understand fees", d: "Explore tuition fees, other charges and payment information.", i: "wallet", c: "#d97706",
+  { href: "/fees", t: "Understand fees", d: "Explore tuition fees, other charges and payment information.", i: "wallet", c: "#d97706",
     p: "Show me the programme fee structure and other charges." },
-  { t: "Admission help", d: "Get guidance on applications, documents and deadlines.", i: "help", c: "#7c3aed",
+  { href: "/apply", t: "Admission help", d: "Get guidance on applications, documents and deadlines.", i: "help", c: "#7c3aed",
     p: "Guide me through the application process." },
 ];
 const PROMPTS = ["What are the application dates?", "What are the fees for the MBA?", "What is the eligibility for BBA?",
@@ -43,6 +43,9 @@ export function mountChat(root, ctx) {
   };
   const signedIn = () => ctx.session().authenticated;
   if (!signedIn()) s.activeApp = null;
+  // the logo / Home tab set this flag: show the welcome screen, but keep the conversation so it can be resumed
+  s.welcome = false;
+  try { if (sessionStorage.getItem("silc_welcome")) { s.welcome = true; sessionStorage.removeItem("silc_welcome"); } } catch { /* storage unavailable */ }
 
   const stage = h("div", { class: "stage", id: "stage" });
   const ctxbar = h("div", { class: "ctxbar" });
@@ -64,7 +67,7 @@ export function mountChat(root, ctx) {
   }
 
   function newChat() {
-    s.messages = []; s.activeApp = null; s.showApps = signedIn() && !!s.apps?.length; save(s); renderAll(); ta.focus();
+    s.messages = []; s.activeApp = null; s.welcome = false; s.showApps = signedIn() && !!s.apps?.length; save(s); renderAll(); ta.focus();
   }
 
   const history = () => s.messages.filter((m) => m.role === "user" || m.role === "assistant")
@@ -73,7 +76,7 @@ export function mountChat(root, ctx) {
   async function ask(text) {
     if (text != null) s.messages.push({ role: "user", content: text });
     s.messages = s.messages.filter((m) => m.role !== "error");
-    s.busy = true; s.showApps = false; renderAll();
+    s.busy = true; s.showApps = false; s.welcome = false; renderAll();
     try {
       const r = await api("/chat", { method: "POST", body: { messages: history(), active_application_id: s.activeApp?.application_id || null } });
       s.messages.push({ role: "assistant", content: r.reply, sources: r.sources, followUps: r.follow_ups, demo: r.demo });
@@ -89,7 +92,7 @@ export function mountChat(root, ctx) {
 
   function pickApp(a) {
     s.activeApp = { application_id: a.application_id, programme_name: a.programme_name };
-    s.showApps = false;
+    s.showApps = false; s.welcome = false;
     s.messages.push({ role: "note", content: `Now discussing ${a.programme_name} (${a.application_id}).`, followUps: APP_PROMPTS });
     save(s); renderAll(); ta.focus();
   }
@@ -99,7 +102,7 @@ export function mountChat(root, ctx) {
     try {
       const r = await api("/applications");
       s.apps = r.applications; s.appsDemo = r.demo; s.appsError = null;
-      s.showApps = s.messages.length === 0 && !s.activeApp && s.apps.length > 0;
+      s.showApps = (s.messages.length === 0 || s.welcome) && !s.activeApp && s.apps.length > 0;
     } catch (e) { s.apps = null; s.appsError = e.message; }
   }
 
@@ -128,7 +131,9 @@ export function mountChat(root, ctx) {
       h("h1", {}, "What would you like to know about ", h("em", {}, "admissions?")),
       h("p", {}, "Ask a question in your own words. I can help you explore programmes, understand eligibility, and navigate the admission process."),
       s.showApps ? appsPanel() : null,
-      h("div", { class: "actions" }, ACTIONS.map((a) => h("button", { class: "action", type: "button", onclick: () => ask(a.p) },
+      s.messages.length ? h("p", {}, h("button", { class: "btn", type: "button", onclick: () => { s.welcome = false; renderAll(); ta.focus(); } },
+        `Continue your conversation (${s.messages.filter((m) => m.role === "user").length} question${s.messages.filter((m) => m.role === "user").length === 1 ? "" : "s"})`)) : null,
+      h("div", { class: "actions" }, ACTIONS.map((a) => h("a", { class: "action", href: a.href, "data-link": "" },
         h("span", { class: "ic", style: `background:${a.c}` }, icon(a.i)), h("div", {}, h("b", {}, a.t), h("span", {}, a.d))))),
       h("div", { class: "chips" }, PROMPTS.map(chip)),
       signedIn() && s.apps && !s.showApps ? h("button", { class: "linkbtn", type: "button", onclick: () => { s.showApps = true; renderAll(); } }, "Show my applications") : null,
@@ -157,7 +162,7 @@ export function mountChat(root, ctx) {
   }
 
   function renderStage() {
-    if (!s.messages.length) { stage.replaceChildren(hero()); return; }
+    if (!s.messages.length || s.welcome) { stage.replaceChildren(hero()); return; }
     const last = s.messages.map((m) => m.role).lastIndexOf("assistant");
     const kids = s.messages.map((m, i) => message(m, i === last));
     if (s.showApps) kids.push(appsPanel());

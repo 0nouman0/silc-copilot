@@ -7,7 +7,7 @@ const state = { meta: null, session: { authenticated: false, user: null, demo_us
 const $ = (id) => document.getElementById(id);
 
 const NAV = [["/", "Home"], ["/programmes", "Explore Programmes"], ["/admissions", "Admissions"], ["/support", "Help"]];
-const QUICK = [["/programmes", "Explore Programmes"], ["/eligibility", "Check Eligibility"], ["/admissions", "Application Dates"],
+const QUICK = [["/programmes", "Explore Programmes"], ["/eligibility", "Check Eligibility"], ["/admissions", "Application Dates"], ["/apply", "How to Apply"],
   ["/fees", "Fee Structure"], ["/scholarships", "Scholarships"], ["/documents", "Documents"], ["/hostel", "Hostel"], ["/campuses", "Campuses"],
   ["/placements", "Placements"], ["/international", "International"], ["/support", "Contact Admissions"]];
 
@@ -17,6 +17,7 @@ const ROUTES = [
   [/^\/programmes\/([^/]+)$/, P.programmeDetailPage, ["id"]],
   [/^\/eligibility$/, P.eligibilityPage],
   [/^\/admissions$/, P.admissionsPage],
+  [/^\/apply$/, P.applyPage],
   [/^\/fees$/, P.feesPage],
   [/^\/scholarships$/, P.scholarshipsPage],
   [/^\/documents$/, P.documentsPage],
@@ -28,7 +29,8 @@ const ROUTES = [
 ];
 
 export function navigate(path) {
-  history.pushState({}, "", path);
+  if (location.pathname + location.search === path) history.replaceState({}, "", path);  // same page: don't stack history entries
+  else history.pushState({}, "", path);
   render();
 }
 
@@ -38,7 +40,9 @@ document.addEventListener("click", (e) => {
   const url = new URL(a.href, location.origin);
   if (url.origin !== location.origin) return;
   e.preventDefault();
-  navigate(url.pathname);
+  // the logo and the Home tab always land on the welcome screen (an open conversation is kept and can be resumed)
+  if (a.matches(".brand") || (a.closest(".nav") && url.pathname === "/")) { try { sessionStorage.setItem("silc_welcome", "1"); } catch { /* ignore */ } }
+  navigate(url.pathname + url.search);
 });
 window.addEventListener("popstate", render);
 
