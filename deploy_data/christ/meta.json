@@ -1,0 +1,73 @@
+{
+ "scraped_at": "2026-11-17T17:02:10+00:00",
+ "source_site": "https://christuniversity.in",
+ "complete": false,
+ "phase": "crawl-5000",
+ "programmes": 348,
+ "programmes_with_eligibility": 323,
+ "programmes_with_fees": 348,
+ "programmes_with_tabs": 0,
+ "pages": 2041,
+ "pages_by_kind": {
+  "page": 1962,
+  "external": 79
+ },
+ "pages_by_category": {
+  "general": 1151,
+  "admissions": 35,
+  "programmes": 201,
+  "international": 112,
+  "events": 145,
+  "examination": 13,
+  "research": 58,
+  "campus": 211,
+  "hostel": 11,
+  "fees": 10,
+  "about": 66,
+  "scholarships": 8,
+  "placements": 5,
+  "contact": 15
+ },
+ "hosts": {
+  "christuniversity.in": 1119,
+  "christbangalore.blogspot.com": 39,
+  "christuba.wordpress.com": 40,
+  "alumni.christuniversity.in": 90,
+  "online.christuniversity.in": 110,
+  "cicf.christuniversity.in": 1,
+  "cux.christuniversity.in": 62,
+  "cif.christuniversity.in": 7,
+  "holistichighered.christuniversity.in": 3,
+  "bkc.christuniversity.in": 95,
+  "brc.christuniversity.in": 81,
+  "byc.christuniversity.in": 79,
+  "ncr.christuniversity.in": 144,
+  "lavasa.christuniversity.in": 126,
+  "cuic.christuniversity.in": 27,
+  "onlinecourses.christuniversity.in": 3,
+  "stem.christuniversity.in": 2,
+  "saints.christuniversity.in": 1,
+  "mooc.christuniversity.in": 2,
+  "pandemicresponse.christuniversity.in": 1,
+  "ncrlibrary.christuniversity.in": 1,
+  "ncrcourses.christuniversity.in": 1,
+  "lavasalibrary.christuniversity.in": 2,
+  "mediapsychologylab.christuniversity.in": 1,
+  "neurochemistrylab.christuniversity.in": 1,
+  "cybersecuritylab.christuniversity.in": 1,
+  "bdlab.christuniversity.in": 1,
+  "knowledgeshare.christuniversity.in": 1
+ },
+ "external_sources": [
+  "CHRIST blog (Blogspot)",
+  "CHRIST blog (WordPress)"
+ ],
+ "requests": 1413,
+ "seconds": 1389,
+ "bundle": {
+  "pages": 2041,
+  "pdfs_kept": 0,
+  "pdfs_dropped": 0,
+  "pdf_chars_each": 30000
+ }
+}
