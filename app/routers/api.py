@@ -5,13 +5,14 @@ import time
 from collections import defaultdict, deque
 
 from fastapi import APIRouter, HTTPException, Request, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from .. import auth
 from ..agent.decision_engine import run_decision_agent
 from ..agent.orchestrator import run_agent
 from ..applicants.adapter import DEMO_USERS, ApplicantApiUnavailable, get_applicant_api
 from ..christ.eligibility_hint import hint
+from ..christ.format import prose
 from ..christ.store import DataNotReady, get_corpus
 from ..config import BRAND_PRODUCT, BRAND_UNIVERSITY, agent_mode, integration_mode, llm_config
 from ..llm import LLMError, get_decider, get_llm_provider
@@ -94,9 +95,20 @@ def applications(request: Request):
 
 
 # ----------------------------------------------------------------- chat
+USER_MAX = 4000        # what a person may type
+HISTORY_MAX = 20000    # assistant replies echoed back as history (fee tables are long); trimmed before use
+HISTORY_KEEP = 3000
+
+
 class ChatMsg(BaseModel):
     role: str = Field(pattern="^(user|assistant)$")
-    content: str = Field(min_length=1, max_length=4000)
+    content: str = Field(min_length=1, max_length=HISTORY_MAX)
+
+    @model_validator(mode="after")
+    def _user_limit(self):
+        if self.role == "user" and len(self.content) > USER_MAX:
+            raise ValueError(f"Message is too long (max {USER_MAX} characters).")
+        return self
 
 
 class ChatBody(BaseModel):
@@ -123,7 +135,7 @@ async def chat(body: ChatBody, request: Request):
             active = None
 
     try:
-        history = [m.model_dump() for m in body.messages]
+        history = [{"role": m.role, "content": m.content if m.role == "user" else m.content[:HISTORY_KEEP]} for m in body.messages]
         if agent_mode() == "decisions":
             result = await run_decision_agent(get_decider(), history, user_id=uid, active_application=active)
         else:
@@ -186,13 +198,15 @@ def topic(name: str):
         raise HTTPException(404, detail={"code": "not_found", "message": "Unknown topic."})
     cats, query = TOPICS[name]
     hits = _corpus().search(query, k=12, categories=cats) or _corpus().search(query, k=12)
-    seen, out = set(), []
+    seen, seen_text, out = set(), set(), []
     for h in hits:
-        if h.chunk.url in seen:
+        excerpt = prose(h.chunk.text[:900])[:700]
+        key = " ".join(excerpt.split())[:160]
+        if h.chunk.url in seen or key in seen_text or not excerpt:   # one card per page, and no identical copies from sibling sites
             continue
         seen.add(h.chunk.url)
-        out.append({"title": h.chunk.title, "heading": h.chunk.heading, "url": h.chunk.url, "excerpt": h.chunk.text[:700],
-                    "external": h.chunk.kind == "external"})
+        seen_text.add(key)
+        out.append({"title": h.chunk.title, "heading": h.chunk.heading, "url": h.chunk.url, "excerpt": excerpt, "external": h.chunk.kind == "external"})
     extra = {}
     if name == "apply":  # the public application portal link most programmes share
         from collections import Counter

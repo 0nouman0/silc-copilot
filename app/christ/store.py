@@ -137,8 +137,11 @@ class Hit:
 
     def source(self) -> SourceRef:
         c = self.chunk
-        return SourceRef(doc_id=c.url, title=c.title if not c.heading or c.heading == c.title else f"{c.title} — {c.heading}",
-                         url=c.url, external=c.kind == "external")
+        title = c.title if not c.heading or c.heading == c.title else f"{c.title} — {c.heading}"
+        host = urlsplit(c.url).netloc
+        if host.endswith(".christuniversity.in") and host != "www.christuniversity.in":
+            title += f" · {host.split('.')[0]}"  # campus / centre site, so identical page titles stay distinguishable
+        return SourceRef(doc_id=c.url, title=title, url=c.url, external=c.kind == "external")
 
 
 @dataclass

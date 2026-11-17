@@ -87,7 +87,7 @@ Pages: `/` chat · `/programmes` (+ detail) · `/eligibility` · `/admissions` �
 | Tool-calling agent (chat models) | `app/agent/orchestrator.py`, `app/agent/prompt.py`, `app/llm/` |
 | Applicant API adapter (**mock**) | `app/applicants/adapter.py` |
 | Session / auth | `app/auth.py` |
-| UI | `static/` (no build step) |
+| UI | `static/`: Bootstrap 5.3 + Bootstrap Icons + Inter, vendored in `static/vendor/` (no CDN, no build step). Content formatting: `app/christ/format.py` (server) and `static/js/md.js` (renderer) |
 
 ## Safety properties (covered by tests)
 
@@ -134,3 +134,9 @@ Set these in **Vercel → Project → Settings → Environment Variables** (secr
 
 Refresh the data by re-running the scrape, re-bundling, committing and pushing (Vercel redeploys on push).
 The "my applications" demo uses a **mock** applicant API; no live CHRIST system is connected.
+
+## Front-end notes
+
+- **Components:** Bootstrap 5.3 (navbar, cards, pagination, accordion, modal, forms, badges) with the CHRIST blue/gold set through Bootstrap's own CSS variables in `static/css/app.css`; icons are Bootstrap Icons; the typeface is Inter. All three are vendored under `static/vendor/` (see `static/vendor/README.md` for versions and licences), so the site has no CDN dependency and Vercel needs no build step.
+- **Answer formatting:** the server turns scraped text into tidy markdown (`prose()`: one paragraph per line, call-to-action labels like "Apply Now" removed, split dates re-joined; replies start with a `###` title and a muted `~` subtitle). `md.js` renders it safely (HTML is escaped, links are http(s) only, tables are responsive).
+- **Tests:** `pytest` (Python) and `node --test tests/js/md.test.mjs` (the markdown renderer).

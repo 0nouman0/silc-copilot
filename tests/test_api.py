@@ -160,3 +160,41 @@ def test_apply_topic_returns_guidance_and_the_shared_apply_link(client):
     d = client.get("/api/topic/apply").json()
     assert d["apply_url"] == "https://espro.christuniversity.in/Application/" and d["results"]
     assert "apply_url" not in client.get("/api/topic/hostel").json()
+
+
+def test_long_assistant_history_is_accepted_but_long_user_messages_are_not(client, monkeypatch):
+    """Regression: a long fee answer echoed back as history used to make the NEXT question fail with HTTP 422."""
+    monkeypatch.setenv("AGENT_MODE", "decisions")
+    seen = {}
+
+    class Spy(FakeDecider):
+        async def decide(self, state, questions):
+            seen["state"] = state
+            return await super().decide(state, questions)
+
+    monkeypatch.setattr("app.routers.api.get_decider", lambda: Spy("greeting"))
+    long_answer = "fee table row | 5,70,000 INR |\n" * 400            # ~13 000 characters
+    ok = client.post("/api/chat", json={"messages": [{"role": "user", "content": "mba fees"}, {"role": "assistant", "content": long_answer},
+                                                       {"role": "user", "content": "and the eligibility?"}]})
+    assert ok.status_code == 200 and "and the eligibility?" in seen["state"][-1]
+    assert client.post("/api/chat", json={"messages": [{"role": "user", "content": "x" * 4001}]}).status_code == 422
+    assert client.post("/api/chat", json={"messages": [{"role": "user", "content": "q"}, {"role": "assistant", "content": "y" * 20001}, {"role": "user", "content": "q"}]}).status_code == 422
+
+
+def test_topic_cards_are_clean_and_not_duplicated_across_sibling_sites(client, monkeypatch, tmp_path):
+    import json
+    from app.christ.store import reset_corpus
+    from tests.conftest import PAGES, PROGRAMMES
+    text = ("## How to apply online\nApplication process: apply online before the last date\nPay the Course Fee Online\n"
+            "Apply Now Get More Information\nLast date to apply\n29\nNovember 2026")
+    dup = [{"url": u, "host": h, "title": "Admissions", "kind": "page", "category": "admissions", "text": text}
+           for u, h in (("https://christuniversity.in/how-to-apply", "christuniversity.in"), ("https://ncr.christuniversity.in/how-to-apply", "ncr.christuniversity.in"))]
+    d = tmp_path / "dup"
+    d.mkdir()
+    (d / "programmes.json").write_text(json.dumps(PROGRAMMES), "utf-8")
+    (d / "pages.jsonl").write_text("\n".join(json.dumps(p) for p in PAGES + dup), "utf-8")
+    monkeypatch.setenv("CHRIST_DATA_DIR", str(d))
+    reset_corpus()
+    res = [r for r in client.get("/api/topic/apply").json()["results"] if "how-to-apply" in r["url"]]
+    assert len(res) == 1                                                  # the identical copy on the ncr. site is dropped
+    assert "Apply Now" not in res[0]["excerpt"] and "Last date to apply: 29 November 2026" in res[0]["excerpt"]

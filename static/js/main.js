@@ -1,15 +1,18 @@
 import { api } from "./api.js";
 import { mountChat } from "./chat.js";
-import { h } from "./dom.js";
+import { h, icon } from "./dom.js";
 import * as P from "./pages.js";
 
 const state = { meta: null, session: { authenticated: false, user: null, demo_users: [] } };
 const $ = (id) => document.getElementById(id);
 
-const NAV = [["/", "Home"], ["/programmes", "Explore Programmes"], ["/admissions", "Admissions"], ["/support", "Help"]];
-const QUICK = [["/programmes", "Explore Programmes"], ["/eligibility", "Check Eligibility"], ["/admissions", "Application Dates"], ["/apply", "How to Apply"],
-  ["/fees", "Fee Structure"], ["/scholarships", "Scholarships"], ["/documents", "Documents"], ["/hostel", "Hostel"], ["/campuses", "Campuses"],
-  ["/placements", "Placements"], ["/international", "International"], ["/support", "Contact Admissions"]];
+const NAV = [["/", "Home"], ["/programmes", "Explore Programmes"], ["/admissions", "Admissions"], ["/apply", "How to Apply"], ["/support", "Help"]];
+const QUICK = [
+  ["/programmes", "Explore Programmes", "compass"], ["/eligibility", "Check Eligibility", "patch-check"], ["/admissions", "Application Dates", "calendar-event"],
+  ["/apply", "How to Apply", "pencil-square"], ["/fees", "Fee Structure", "cash-stack"], ["/scholarships", "Scholarships", "award"],
+  ["/documents", "Documents", "file-earmark-text"], ["/hostel", "Hostel", "house-door"], ["/campuses", "Campuses", "buildings"],
+  ["/placements", "Placements", "briefcase"], ["/international", "International", "globe2"], ["/support", "Contact Admissions", "telephone"],
+];
 
 const ROUTES = [
   [/^\/$/, "home"],
@@ -35,68 +38,88 @@ export function navigate(path) {
 }
 
 document.addEventListener("click", (e) => {
-  const a = e.target.closest("a[data-link], .nav a, .quick a, .brand");
+  const a = e.target.closest("a[data-link], .navbar-nav a, .quick a, a.brand");
   if (!a || e.defaultPrevented || e.metaKey || e.ctrlKey || e.shiftKey || a.target === "_blank") return;
   const url = new URL(a.href, location.origin);
   if (url.origin !== location.origin) return;
   e.preventDefault();
   // the logo and the Home tab always land on the welcome screen (an open conversation is kept and can be resumed)
-  if (a.matches(".brand") || (a.closest(".nav") && url.pathname === "/")) { try { sessionStorage.setItem("silc_welcome", "1"); } catch { /* ignore */ } }
+  if (a.matches("a.brand") || (a.closest(".navbar-nav") && url.pathname === "/")) { try { sessionStorage.setItem("silc_welcome", "1"); } catch { /* ignore */ } }
+  const menu = $("navmenu");
+  if (menu?.classList.contains("show")) window.bootstrap?.Collapse.getOrCreateInstance(menu).hide();  // close the mobile menu
   navigate(url.pathname + url.search);
 });
 window.addEventListener("popstate", render);
 
 // ---------------------------------------------------------------- header / session
+async function signIn(id) {
+  await api("/session/demo-login", { method: "POST", body: { user_id: id } });
+  sessionStorage.removeItem("silc_chat_v1");
+  await refreshSession(); render();
+}
+async function signOut() {
+  await api("/session/logout", { method: "POST" });
+  sessionStorage.removeItem("silc_chat_v1");
+  await refreshSession(); render();
+}
+
+function accountMenu() {
+  const s = state.session;
+  const label = s.authenticated ? s.user.name : "Sign in";
+  const items = [];
+  if (s.authenticated) {
+    items.push(h("li", {}, h("h6", { class: "dropdown-header" }, "Signed in as a demo applicant")),
+      h("li", {}, h("span", { class: "dropdown-item-text small text-secondary" }, "No live CHRIST applicant system is connected.")),
+      h("li", {}, h("hr", { class: "dropdown-divider" })),
+      h("li", {}, h("button", { class: "dropdown-item", type: "button", role: "menuitem", onclick: signOut }, icon("box-arrow-right", "me-2"), "Sign out")));
+  } else if (s.demo_users.length) {
+    items.push(h("li", {}, h("h6", { class: "dropdown-header" }, "Demo sign-in (mock applicant records)")),
+      ...s.demo_users.map((u) => h("li", {}, h("button", { class: "dropdown-item", type: "button", role: "menuitem", onclick: () => signIn(u.id) }, icon("person", "me-2"), u.name))));
+  } else {
+    items.push(h("li", {}, h("span", { class: "dropdown-item-text small text-secondary" }, "Sign-in is provided by the university's authentication system.")));
+  }
+  return h("div", { class: "dropdown" },
+    h("button", { class: "btn btn-outline-light btn-sm rounded-pill px-3 d-inline-flex align-items-center gap-2", type: "button", "data-bs-toggle": "dropdown", "aria-expanded": "false" },
+      icon("person-circle", "fs-6"), label),
+    h("ul", { class: "dropdown-menu dropdown-menu-end shadow-sm" }, items));
+}
+
 function renderHeader() {
   const path = location.pathname;
-  const s = state.session;
-  const name = s.user?.name || "Guest";
-  const pop = h("div", { class: "menu-pop", hidden: true, role: "menu" });
-  const btn = h("button", { type: "button", "aria-haspopup": "menu", "aria-expanded": "false", onclick: () => {
-    pop.hidden = !pop.hidden; btn.setAttribute("aria-expanded", String(!pop.hidden));
-  } }, h("span", { class: "avatar", "aria-hidden": "true" }, name[0]), s.authenticated ? name : "Sign in");
+  const active = (href) => path === href || (href !== "/" && path.startsWith(href));
+  $("topbar").replaceChildren(h("nav", { class: "navbar navbar-expand-lg navbar-dark navbar-cu", "aria-label": "Primary" },
+    h("div", { class: "container-xl" },
+      h("a", { class: "navbar-brand brand d-flex align-items-center gap-2 py-0 me-lg-4", href: "/" },
+        h("span", { class: "brand-mark" }, icon("mortarboard-fill")),
+        h("span", {}, h("span", { class: "brand-name" }, "CHRIST Admissions Copilot"),
+          h("small", { class: "brand-sub" }, "Unofficial assistant · " + (state.meta?.university || "CHRIST (Deemed to be University)")))),
+      h("button", { class: "navbar-toggler border-0", type: "button", "data-bs-toggle": "collapse", "data-bs-target": "#navmenu", "aria-controls": "navmenu", "aria-expanded": "false", "aria-label": "Toggle navigation" },
+        h("span", { class: "navbar-toggler-icon" })),
+      h("div", { class: "collapse navbar-collapse", id: "navmenu" },
+        h("ul", { class: "navbar-nav me-auto gap-lg-1 mt-2 mt-lg-0" }, NAV.map(([href, label]) =>
+          h("li", { class: "nav-item" }, h("a", { class: "nav-link" + (active(href) ? " active" : ""), href, "aria-current": active(href) ? "page" : null }, label)))),
+        h("div", { class: "mt-2 mt-lg-0 pb-2 pb-lg-0" }, accountMenu())))));
 
-  if (s.authenticated) {
-    pop.append(h("div", { class: "lbl" }, "Signed in as a demo applicant (no live CHRIST system)"),
-      h("button", { type: "button", role: "menuitem", onclick: async () => { await api("/session/logout", { method: "POST" }); sessionStorage.removeItem("silc_chat_v1"); await refreshSession(); render(); } }, "Sign out"));
-  } else if (s.demo_users.length) {
-    pop.append(h("div", { class: "lbl" }, "Demo sign-in (mock applicant records)"), ...s.demo_users.map((u) => h("button", {
-      type: "button", role: "menuitem", onclick: async () => { await api("/session/demo-login", { method: "POST", body: { user_id: u.id } }); sessionStorage.removeItem("silc_chat_v1"); await refreshSession(); render(); },
-    }, u.name)));
-  } else {
-    pop.append(h("div", { class: "lbl" }, "Sign-in is provided by the university's authentication system."));
-  }
-  document.addEventListener("click", (e) => { if (!pop.hidden && !pop.parentElement.contains(e.target)) { pop.hidden = true; btn.setAttribute("aria-expanded", "false"); } });
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !pop.hidden) { pop.hidden = true; btn.focus(); } });
-
-  $("topbar").replaceChildren(
-    h("a", { class: "brand", href: "/" }, h("span", { class: "mark", html: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 19l7-12 7 12"/></svg>' }),
-      h("span", {}, "CHRIST Admissions Copilot", h("small", {}, "Unofficial assistant · " + (state.meta?.university || "")))),
-    h("nav", { class: "nav", "aria-label": "Primary" }, NAV.map(([href, label]) => h("a", { href, "aria-current": path === href || (href !== "/" && path.startsWith(href)) ? "page" : null }, label))),
-    h("div", { class: "menu" }, btn, pop));
-
-  $("quick").replaceChildren(...QUICK.map(([href, label]) => h("a", { href }, label)));
+  $("quick").replaceChildren(h("div", { class: "container-xl" }, h("div", { class: "scroller" }, QUICK.map(([href, label, ic]) =>
+    h("a", { class: "btn btn-sm rounded-pill d-inline-flex align-items-center gap-1" + (path === href ? " active" : ""), href, "aria-current": path === href ? "page" : null },
+      icon(ic), label)))));
 }
 
 function renderChrome() {
-  const m = state.meta;
-  const b = $("demo-banner");
-  const d = m?.data;
-  if (d?.ready) { b.hidden = false; b.textContent = `Unofficial assistant. Answers come from CHRIST's public website (christuniversity.in), collected ${String(d.scraped_at || "").slice(0, 10)} · ${d.programmes} programmes, ${d.pages} pages. Please confirm important details with the Admissions Office.${d.complete === false ? " (Data collection is still in progress, so some information may be missing.)" : ""}`; }
-  else if (d) { b.hidden = false; b.textContent = "Website data has not been collected yet. Run: python -m scraper.run"; }
-  else b.hidden = true;
-  $("foot").replaceChildren("Answers are based on available university information. ",
-    h("button", { class: "linkbtn", type: "button", onclick: openPrivacy }, "Privacy & data use"));
-}
-
-function openPrivacy() {
-  const d = $("privacy");
-  d.replaceChildren(h("h2", { id: "privacy-title" }, "Privacy & data use"),
-    h("p", {}, "Your messages are sent to the configured AI provider to generate answers and are kept in this browser tab only until you close it or start a new chat."),
-    h("p", {}, "Please do not enter passwords, OTPs, card details or identity numbers. This assistant gives preliminary guidance, not official decisions."),
-    h("p", {}, "Personal application information is shown only after you sign in, and only for your own account."),
-    h("form", { method: "dialog" }, h("button", { class: "btn" }, "Close")));
-  d.showModal();
+  const d = state.meta?.data, n = $("notice");
+  const when = d?.scraped_at ? new Date(d.scraped_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : "";
+  if (d?.ready) {
+    n.hidden = false;
+    n.replaceChildren(icon("info-circle", "me-1"),
+      h("span", { class: "d-none d-md-inline" }, `Unofficial assistant. Answers come from CHRIST's public website (christuniversity.in), collected ${when}. Please confirm important details with the Admissions Office.`,
+        d.complete === false ? " Data collection is still in progress, so some information may be missing." : ""),
+      h("span", { class: "d-md-none" }, `Unofficial · data from christuniversity.in (${when})${d.complete === false ? " · still being collected" : ""}`));
+  } else if (d) {
+    n.hidden = false;
+    n.replaceChildren(icon("exclamation-triangle", "me-1"), "Website data has not been collected yet. Run: python scrape.py");
+  } else n.hidden = true;
+  $("foot").replaceChildren("Answers are based on information published on christuniversity.in · ",
+    h("button", { class: "linkbtn", type: "button", onclick: () => window.bootstrap?.Modal.getOrCreateInstance($("privacy")).show() }, "Privacy & data use"));
 }
 
 async function refreshSession() {
@@ -113,22 +136,24 @@ async function render() {
   const main = $("main");
   const hit = ROUTES.map(([re, view, names]) => [re.exec(path), view, names]).find(([m]) => m);
   if (!hit) {
-    main.replaceChildren(h("div", { class: "page" }, h("div", { class: "state" }, h("h1", {}, "Page not found"), h("a", { class: "btn", href: "/", "data-link": "" }, "Back to home"))));
+    main.replaceChildren(h("div", { class: "container-xl py-5" }, h("div", { class: "state" }, icon("compass", "fs-2 d-block mb-2"), h("h1", { class: "h4" }, "Page not found"),
+      h("a", { class: "btn btn-primary mt-2", href: "/", "data-link": "" }, "Back to home"))));
     document.title = "Not found · CHRIST Admissions Copilot"; return;
   }
   const [m, view, names] = hit;
   document.title = (path === "/" ? "Admissions Assistant" : NAV.concat(QUICK).find(([p]) => p === path)?.[1] || "Programme") + " · CHRIST Admissions Copilot";
-  if (view === "home") { mountChat(main, { session: () => state.session, navigate }); return; }
+  if (view === "home") { main.scrollTop = 0; mountChat(main, { session: () => state.session, navigate }); return; }
   main.replaceChildren(P.loading());
   const params = {}; (names || []).forEach((n, i) => { params[n] = decodeURIComponent(m[i + 1]); });
   try {
     const node = await view({ navigate, params });
     if (my !== token) return; // a newer navigation won
     main.replaceChildren(node);
-    main.focus({ preventScroll: true }); window.scrollTo(0, 0);
+    main.focus({ preventScroll: true }); main.scrollTop = 0;
   } catch (e) {
     if (my !== token) return;
-    main.replaceChildren(e.status === 404 ? h("div", { class: "page" }, h("div", { class: "state" }, h("p", {}, e.message), h("a", { class: "btn", href: "/programmes", "data-link": "" }, "Browse programmes")))
+    main.replaceChildren(e.status === 404
+      ? h("div", { class: "container-xl py-5" }, h("div", { class: "state" }, icon("search", "fs-2 d-block mb-2"), h("p", {}, e.message), h("a", { class: "btn btn-primary", href: "/programmes", "data-link": "" }, "Browse programmes")))
       : P.errorState(e, () => render()));
   }
 }

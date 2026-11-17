@@ -277,3 +277,36 @@ def test_agent_mode_autodetects_decider_models(monkeypatch):
     assert agent_mode() == "tools"
     monkeypatch.setenv("AGENT_MODE", "decisions")
     assert agent_mode() == "decisions"
+
+
+# ---------------------------------------------------------------- readable formatting of scraped text
+def test_prose_gives_each_scraped_line_a_paragraph_and_drops_cta_labels():
+    from app.agent.decision_engine import _prose
+    raw = "Pay the Course Fee Online\nApply Now\nGet More Information\nLast date to apply\n29\nNovember 2026\n1. First\n2. Second\n| A |\n|---|\n| 1 |"
+    assert _prose(raw) == "Pay the Course Fee Online\n\nLast date to apply: 29 November 2026\n\n1. First\n2. Second\n\n| A |\n|---|\n| 1 |"
+    assert _prose(None) == "" and _prose("Apply Now") == ""
+
+
+def test_finish_turns_a_bold_title_into_a_heading_with_a_subtitle():
+    from app.agent.decision_engine import _finish
+    out = _finish("**Fees — MBA** · Bangalore Central Campus (as published on the CHRIST website)\n\nbody")
+    assert out == "### Fees — MBA\n\n~ Bangalore Central Campus (as published on the CHRIST website)\n\nbody"
+    assert _finish("**Verification required** — MBA\n\nx").startswith("### Verification required\n\n~ MBA\n\n")
+    assert _finish("**Only a title**\n\nx") == "### Only a title\n\nx"
+    assert _finish("I found **3 applications** for you") == "I found **3 applications** for you"  # not a title: untouched
+
+
+async def test_replies_are_structured_for_display():
+    fees, _ = await run("programme_fees", "mba fees")
+    assert fees.reply.startswith("### Fees — Master of Business Administration (MBA)\n\n~ Bangalore Central Campus")
+    host, _ = await run("hostel", "hostel facilities")
+    assert host.reply.startswith("#### ") and "separate hostels" in host.reply and "_Hostel" not in host.reply  # section heading, no inline '— _document_'
+
+
+def test_prose_drops_combined_cta_labels_and_repeats_but_keeps_real_sentences():
+    from app.christ.format import prose
+    assert prose("Apply Now Get More Information\nRead more >>\nYou may apply now by visiting the portal.") == "You may apply now by visiting the portal."
+    assert prose("Session I\nSession I\nMBA Admission – 2027") == "Session I\n\nMBA Admission – 2027"
+    assert prose("Last date to apply\n24 January 2027") == "Last date to apply: 24 January 2027"
+    assert prose("The last date is final.\n24 January 2027") == "The last date is final.\n\n24 January 2027"  # a sentence is not a label
+    assert prose("| A | B |\n|---|---|\n| 1 | 2 |") == "| A | B |\n|---|---|\n| 1 | 2 |"

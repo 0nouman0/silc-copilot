@@ -18,6 +18,7 @@ from typing import Any
 
 from ..applicants.adapter import Application
 from ..christ.eligibility_hint import hint
+from ..christ.format import prose
 from ..christ.models import Programme, SourceRef
 from ..christ.store import DataNotReady, Resolution, get_corpus
 from ..llm.decisions import DecisionsClient
@@ -240,13 +241,31 @@ def other_campuses(q: Req) -> str:
     return ""
 
 
+# ----------------------------------------------------------------------------- readable formatting of scraped text
+_prose = prose
+
+
+def _passages(passages: list[dict], limit: int) -> str:
+    """Knowledge-base passages as titled sections (the source page is shown as a link chip under the answer)."""
+    return "\n\n".join(f"#### {p['section']}\n\n{_prose(p['text'])}" for p in passages[:limit])
+
+
+def _finish(reply: str) -> str:
+    """Turn a leading **Bold title** into a real heading with a muted subtitle, so every answer has the same structure."""
+    m = re.match(r"^\*\*(.+?)\*\*([^\n]*)\n", reply)
+    if not m:
+        return reply
+    sub = re.sub(r"^[\s·—-]+", "", m.group(2)).strip()
+    return f"### {m.group(1).strip()}\n\n" + (f"~ {sub}\n\n" if sub else "") + reply[m.end():].lstrip("\n")
+
+
 # ----------------------------------------------------------------------------- generic knowledge-base rendering
 def kb_reply(t: Turn, query: str, cats: set[str] | None, *, intro: str = "", limit: int = 3, none_msg: str | None = None,
              tool: str = "search_knowledge_base") -> str:
     out = t.run(tool, query=query) if tool != "search_knowledge_base" else t.run("search_knowledge_base", query=query)
     if _err(out):
         return none_msg or (f"I couldn't find that in the information I collected from the CHRIST website. {CONTACT_HINT}")
-    body = "\n\n".join(f"**{p['section']}** — _{p['document']}_\n{p['text']}" for p in out.data["passages"][:limit])
+    body = _passages(out.data["passages"], limit)
     return (intro + "\n\n" if intro else "") + body
 
 
@@ -308,7 +327,7 @@ def h_curriculum(t, q):
                 (f" and the [brochure]({p.brochure_url})." if p.brochure_url else ".") + f" {CONTACT_HINT}")
     d = out.data
     if "section" in d:
-        return f"**{p.name} — {d['section']}**\n\n{d['text']}"
+        return f"**{p.name} — {d['section']}**\n\n{_prose(d['text'])}"
     return f"**{p.name}**\n\n" + "\n\n".join(f"**{s['title']}**\n{s['text']}" for s in d["sections"])
 
 
@@ -343,7 +362,7 @@ def h_eligibility(t, q, check=False):
     out = t.run("get_eligibility_criteria", programme_id=p.id)
     if (e := _err(out)):
         return f"{e} See the [programme page]({p.url}). {CONTACT_HINT}"
-    body = f"**Eligibility — {p.name}**{' · ' + p.campus if p.campus else ''} (as published on the CHRIST website)\n\n{out.data['eligibility']}"
+    body = f"**Eligibility — {p.name}**{' · ' + p.campus if p.campus else ''} (as published on the CHRIST website)\n\n{_prose(out.data['eligibility'])}"
     t.followups = [x.format(n=p.name) for x in NEXT if "eligibility" not in x]
     if not check:
         return body + "\n\nShare your percentage and qualification if you'd like a **preliminary** comparison." + other_campuses(q)
@@ -401,7 +420,7 @@ def h_fees(t, q, fee_only=False):
         lines = [ln for ln in fees.split("\n") if re.search(r"registration fee|application fee|caution deposit|non-refundable", ln, re.I)]
         if lines:
             return f"**Application / registration fee — {p.name}**\n\n" + "\n".join(f"- {ln}" for ln in lines) + f"\n\n[Source]({p.url})" + other_campuses(q)
-    return f"**Fees — {p.name}**{' · ' + p.campus if p.campus else ''} (as published on the CHRIST website)\n\n{fees}" + other_campuses(q)
+    return f"**Fees — {p.name}**{' · ' + p.campus if p.campus else ''} (as published on the CHRIST website)\n\n{_prose(fees)}" + other_campuses(q)
 
 
 def h_selection(t, q):
@@ -432,7 +451,7 @@ def h_contact(t, q):
     out = t.run("get_contact_information")
     if _err(out):
         return "I couldn't find contact details in the pages I collected. Please use the contact options on https://christuniversity.in ."
-    body = "\n\n".join(f"**{p['section']}** — _{p['document']}_\n{p['text']}" for p in out.data["passages"][:3])
+    body = _passages(out.data["passages"], 3)
     return body + "\n\n_I can't create support tickets or book callbacks myself._"
 
 
@@ -448,7 +467,7 @@ def h_topic(cats: set[str], extra: str, tool: str):
         out = t.run(tool, query=q.text + " " + extra)
         if _err(out):
             return f"I couldn't find that in the information I collected from the CHRIST website. {CONTACT_HINT}"
-        return "\n\n".join(f"**{p['section']}** — _{p['document']}_\n{p['text']}" for p in out.data["passages"][:3])
+        return _passages(out.data["passages"], 3)
     return fn
 
 
@@ -554,4 +573,4 @@ async def run_decision_agent(decider: DecisionsClient, history: list[dict], *, u
     except DataNotReady as e:
         return AgentResult(f"The CHRIST website data has not been loaded yet. {e}", [], t.used, [], False, intent="data_not_ready")
     follow = t.followups or ([x.format(n=res.best.name) for x in NEXT[:3]] if res and res.best and not res.ambiguous else GENERIC.get(u.intent, DEFAULT_SUGGEST))
-    return AgentResult(reply, list(t.sources.values()), t.used, follow, t.demo, intent=u.intent)
+    return AgentResult(_finish(reply), list(t.sources.values()), t.used, follow, t.demo, intent=u.intent)

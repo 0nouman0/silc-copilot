@@ -5,17 +5,40 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CHRIST Admissions Copilot (unofficial)</title>
   <meta name="description" content="Unofficial admissions assistant for CHRIST (Deemed to be University), answering from its public website.">
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%234f46e5'/%3E%3Cpath d='M9 21l7-11 7 11' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <meta name="theme-color" content="#0a2358">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230a2358'/%3E%3Cpath d='M16 7 4 13l12 6 12-6-12-6zm-7 9.5V21c0 2 3.1 4 7 4s7-2 7-4v-4.5l-7 3.5-7-3.5z' fill='white'/%3E%3C/svg%3E">
+  <link rel="preload" as="font" type="font/woff2" crossorigin href="/static/vendor/inter/inter-latin.woff2">
+  <link rel="stylesheet" href="/static/vendor/inter/inter.css">
+  <link rel="stylesheet" href="/static/vendor/bootstrap/bootstrap.min.css">
+  <link rel="stylesheet" href="/static/vendor/bootstrap-icons/bootstrap-icons.min.css">
   <link rel="stylesheet" href="/static/css/app.css">
 </head>
 <body>
-  <a class="skip" href="#main">Skip to main content</a>
-  <div id="demo-banner" class="demo-banner" hidden></div>
-  <header class="topbar" id="topbar"></header>
-  <nav class="quick" id="quick" aria-label="Quick links"></nav>
+  <a class="visually-hidden-focusable skip" href="#main">Skip to main content</a>
+  <div id="notice" class="notice" role="note" hidden></div>
+  <header id="topbar"></header>
+  <nav id="quick" class="quick" aria-label="Quick links"></nav>
   <main id="main" tabindex="-1"></main>
-  <footer class="foot" id="foot"></footer>
-  <dialog id="privacy" aria-labelledby="privacy-title"></dialog>
+  <footer id="foot" class="foot"></footer>
+
+  <div class="modal fade" id="privacy" tabindex="-1" aria-labelledby="privacy-title" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2 class="modal-title h5" id="privacy-title"><i class="bi bi-shield-check text-primary me-2" aria-hidden="true"></i>Privacy &amp; data use</h2>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <p>Your messages are sent to the configured AI service so it can work out what you are asking, and are kept in this browser tab only until you close it or start a new chat.</p>
+          <p>Please do not enter passwords, OTPs, card details or identity numbers. This assistant gives preliminary guidance, not official decisions.</p>
+          <p class="mb-0">Personal application information is shown only after you sign in, and only for your own account.</p>
+        </div>
+        <div class="modal-footer"><button type="button" class="btn btn-primary" data-bs-dismiss="modal">Close</button></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/vendor/bootstrap/bootstrap.bundle.min.js"></script>
   <script type="module" src="/static/js/main.js"></script>
 </body>
 </html>
