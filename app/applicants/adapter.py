@@ -39,16 +39,16 @@ class ApplicantApi(Protocol):
 # ---- DEMO MOCK (fictional records; labelled as demo everywhere) ----
 DEMO_USERS = {
     "demo-applicant-1": {"name": "Demo Applicant One", "applications": [
-        Application(application_id="DEMO-APP-0001", programme_id="mba", programme_name="MBA",
-                    campus="Main Campus (demo)", status="Under Review", last_updated="2027-03-02"),
-        Application(application_id="DEMO-APP-0002", programme_id="bsc-cs", programme_name="B.Sc. Computer Science",
-                    campus="City Campus (demo)", status="Application Submitted", last_updated="2027-02-20"),
-        Application(application_id="DEMO-APP-0003", programme_id="msc-ds", programme_name="M.Sc. Data Science",
-                    campus="Main Campus (demo)", status="Shortlisted", last_updated="2027-03-10"),
+        Application(application_id="DEMO-APP-0001", programme_id="mba", programme_name="Master of Business Administration (MBA)",
+                    campus="Bangalore Central Campus", status="Under Review", last_updated="2027-03-02"),
+        Application(application_id="DEMO-APP-0002", programme_id="bba", programme_name="Bachelor of Business Administration (BBA)",
+                    campus="Bangalore Central Campus", status="Application Submitted", last_updated="2027-02-20"),
+        Application(application_id="DEMO-APP-0003", programme_id="bcom", programme_name="Bachelor of Commerce (B.Com.)",
+                    campus="Bangalore Central Campus", status="Shortlisted", last_updated="2027-03-10"),
     ]},
     "demo-applicant-2": {"name": "Demo Applicant Two", "applications": [
-        Application(application_id="DEMO-APP-0101", programme_id="bcom", programme_name="B.Com.",
-                    campus="Main Campus (demo)", status="Shortlisted", offer_status="Offer Released",
+        Application(application_id="DEMO-APP-0101", programme_id="bcom", programme_name="Bachelor of Commerce (B.Com.)",
+                    campus="Bangalore Central Campus", status="Shortlisted", offer_status="Offer Released",
                     last_updated="2027-03-12"),
     ]},
 }

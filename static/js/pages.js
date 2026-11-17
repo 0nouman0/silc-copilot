@@ -1,220 +1,178 @@
 import { api } from "./api.js";
 import { h, na } from "./dom.js";
+import { renderMarkdown } from "./md.js";
 
-const DEMO_TAG = () => h("span", { class: "tag demo" }, "Demo data — not official");
-const money = (n, cur) => (n == null ? h("span", { class: "na" }, "Not published") : `${cur ? cur + " " : ""}${Number(n).toLocaleString("en-IN")}`);
-const months = (m) => (m == null ? na(null) : m % 12 === 0 ? `${m / 12} years` : `${m} months`);
-const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+const cap = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : "");
+const fmtDate = (s) => {
+  if (!s) return h("span", { class: "na" }, "Not published");
+  const d = new Date(s.slice(0, 10) + "T00:00:00");
+  return isNaN(d) ? s : d.toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
+};
+const md = (text) => h("div", { class: "bubble", html: renderMarkdown(text) });
+const srcLine = (url, label = "Source: christuniversity.in") => h("p", { class: "srcline" }, url ? h("a", { href: url, target: "_blank", rel: "noopener noreferrer" }, label) : label);
 
 export const loading = () => h("div", { class: "page" }, h("div", { class: "grid" }, [1, 2, 3].map(() => h("div", { class: "skeleton" }))));
 export const errorState = (e, retry) => h("div", { class: "page" }, h("div", { class: "state err", role: "alert" },
   h("p", {}, e.message || "Something went wrong."), retry ? h("button", { class: "btn", type: "button", onclick: retry }, "Try again") : null));
 const empty = (t) => h("div", { class: "state" }, t);
-const head = (title, lede, demo) => [h("h1", {}, title, " ", demo ? DEMO_TAG() : null), h("p", { class: "lede" }, lede)];
+const head = (title, lede) => [h("h1", {}, title), h("p", { class: "lede" }, lede)];
 const askBtn = (text, navigate) => h("button", { class: "btn ghost", type: "button", onclick: () => {
   try { sessionStorage.setItem("silc_prefill", text); } catch { /* ignore */ }
   navigate("/");
-} }, "Ask the copilot");
+} }, "Ask the assistant");
 
 // ---------------------------------------------------------------- programmes
-export async function programmesPage({ navigate }) {
-  const d = await api("/programmes");
+export async function programmesPage() {
+  const first = await api("/programmes?limit=60");
   const grid = h("div", { class: "grid" });
-  const q = h("input", { type: "search", placeholder: "Search programmes", "aria-label": "Search programmes" });
-  const lvl = h("select", { "aria-label": "Level" }, [["", "All levels"], ["undergraduate", "Undergraduate"], ["postgraduate", "Postgraduate"], ["doctoral", "Doctoral"]]
+  const count = h("p", { class: "lede", role: "status" });
+  const moreBtn = h("button", { class: "btn ghost more", type: "button", hidden: true }, "Show more");
+  const q = h("input", { type: "search", placeholder: "Search programmes (e.g. MBA, computer science)", "aria-label": "Search programmes", style: "min-width:260px" });
+  const lvl = h("select", { "aria-label": "Level" }, [["", "All levels"], ["undergraduate", "Undergraduate"], ["postgraduate", "Postgraduate"], ["doctoral", "Doctoral"], ["other", "Other / certificate"]]
     .map(([v, t]) => h("option", { value: v }, t)));
-  const draw = () => {
-    const text = q.value.trim().toLowerCase();
-    const rows = d.programmes.filter((p) => (!lvl.value || p.level === lvl.value) &&
-      (!text || `${p.name} ${p.discipline} ${p.specializations.join(" ")}`.toLowerCase().includes(text)));
-    grid.replaceChildren(...(rows.length ? rows.map((p) => h("div", { class: "card link" },
-      h("a", { class: "cardlink", href: `/programmes/${p.id}`, "data-link": "" },
-        h("h3", {}, p.name), h("p", {}, p.summary),
-        h("span", { class: "tag" }, cap(p.level)), h("span", { class: "tag" }, months(p.duration_months)),
-        p.modes.map((m) => h("span", { class: "tag" }, m))))) : [empty("No programmes match your search. Try a different keyword or level.")]));
-  };
-  q.addEventListener("input", draw); lvl.addEventListener("change", draw); draw();
-  return h("div", { class: "page" }, head("Explore programmes", "Browse undergraduate, postgraduate and doctoral programmes.", d.demo),
-    h("div", { class: "toolbar" }, q, lvl), grid);
+  const campus = h("select", { "aria-label": "Campus" }, [h("option", { value: "" }, "All campuses"), ...first.campuses.map((c) => h("option", { value: c }, c))]);
+  let offset = 0, total = 0, timer;
+
+  const card = (p) => h("div", { class: "card link" }, h("a", { class: "cardlink", href: `/programmes/${p.id}`, "data-link": "" },
+    h("h3", {}, p.name), h("p", {}, p.campus || ""),
+    h("span", { class: "tag" }, cap(p.level)), p.duration ? h("span", { class: "tag" }, p.duration) : null,
+    p.application_close ? h("span", { class: "tag ok" }, "Apply by ", fmtDate(p.application_close)) : null));
+
+  async function load(reset) {
+    if (reset) { offset = 0; grid.replaceChildren(); }
+    const params = new URLSearchParams({ limit: "60", offset: String(offset) });
+    if (q.value.trim()) params.set("q", q.value.trim());
+    if (lvl.value) params.set("level", lvl.value);
+    if (campus.value) params.set("campus", campus.value);
+    try {
+      const d = await api(`/programmes?${params}`);
+      total = d.total; offset += d.programmes.length;
+      grid.append(...d.programmes.map(card));
+      if (!total) grid.replaceChildren(empty("No programmes match your search. Try a different keyword, level or campus."));
+      count.textContent = `${total} programme${total === 1 ? "" : "s"}`;
+      moreBtn.hidden = offset >= total;
+    } catch (e) { grid.replaceChildren(h("div", { class: "state err", role: "alert" }, e.message)); }
+  }
+  const reload = () => { clearTimeout(timer); timer = setTimeout(() => load(true), 250); };
+  q.addEventListener("input", reload); lvl.addEventListener("change", reload); campus.addEventListener("change", reload);
+  moreBtn.addEventListener("click", () => load(false));
+  load(true);
+  return h("div", { class: "page" }, ...head("Explore programmes", "Programmes listed on the CHRIST website, with campus and application dates."),
+    h("div", { class: "toolbar" }, q, lvl, campus), count, grid, moreBtn, srcLine(first.source, "Source: CHRIST programme catalogue"));
 }
 
 export async function programmeDetailPage({ navigate, params }) {
-  const d = await api(`/programmes/${encodeURIComponent(params.id)}`);
-  const p = d.programme, c = d.eligibility;
-  const row = (k, v) => h("tr", {}, h("th", { scope: "row" }, k), h("td", {}, v));
+  const { programme: p } = await api(`/programmes/${encodeURIComponent(params.id)}`);
+  const qf = p.quick_facts || {};
+  const fact = (k, v) => h("div", { class: "fact" }, h("small", {}, k), v);
+  const links = [h("a", { class: "btn", href: p.url, target: "_blank", rel: "noopener noreferrer" }, "Official programme page")];
+  if (p.apply_url) links.push(h("a", { class: "btn ghost", href: p.apply_url, target: "_blank", rel: "noopener noreferrer" }, "Apply online"));
+  if (p.brochure_url) links.push(h("a", { class: "btn ghost", href: p.brochure_url, target: "_blank", rel: "noopener noreferrer" }, "Brochure (PDF)"));
+  links.push(askBtn(`Tell me about ${p.name}`, navigate));
+  const overview = (p.overview || "").split("About the Programme")[1] || p.overview || "";
+
+  const sec = (title, text, open = false) => text ? h("details", { class: "sec", open: open || null }, h("summary", {}, title), md(text)) : null;
   return h("div", { class: "page" }, h("a", { class: "crumb", href: "/programmes", "data-link": "" }, "← All programmes"),
-    ...head(p.name, p.summary, d.demo),
-    h("div", { class: "toolbar" },
-      h("a", { class: "btn", href: "/eligibility", "data-link": "" }, "Check my eligibility"), askBtn(`Tell me more about ${p.name}.`, navigate)),
-    h("h2", {}, "At a glance"),
-    h("div", { class: "tablewrap" }, h("table", {}, h("tbody", {},
-      row("Level", cap(p.level)), row("Duration", months(p.duration_months)),
-      row("Modes", p.modes.length ? p.modes.join(", ") : na(null)), row("Medium of instruction", na(p.medium_of_instruction)),
-      row("Accreditation / approval", na(p.accreditation)),
-      row("Specializations", p.specializations.length ? p.specializations.join(", ") : "None listed"),
-      row("Internship", na(p.internship)), row("Research component", p.research_component == null ? na(null) : p.research_component ? "Yes" : "No"),
-      row("Career paths", p.career_paths ? p.career_paths.join(", ") : na(null))))),
-    h("h2", {}, "Published eligibility"),
-    c ? h("div", { class: "tablewrap" }, h("table", {}, h("tbody", {},
-      row("Minimum qualification", na(c.min_qualification_text)), row("Minimum percentage", c.min_percentage == null ? na(null) : `${c.min_percentage}%`),
-      row("Required subjects", c.required_subjects.length ? c.required_subjects.join(", ") : "None listed"),
-      row("Entrance examination", c.entrance_exam ? (c.entrance_exam.required ? `Required${c.entrance_exam.name ? ": " + c.entrance_exam.name : ""}` : "Not required") : na(null)),
-      row("Academic year", c.academic_year))))
-      : empty("Published eligibility criteria are not available for this programme. Please contact the Admissions Office."),
-    h("h2", {}, "Fees (domestic)"),
-    d.fees ? feeTable(d.fees) : empty("A fee structure is not available for this programme."),
-    h("h2", {}, "Curriculum"),
-    p.curriculum.length ? p.curriculum.map((s) => h("div", { class: "card", style: "margin-bottom:10px" }, h("h3", {}, `Semester ${s.semester}`),
-      s.items.map((i) => h("span", { class: "tag" }, `${i.name} · ${i.type}`)))) : empty("Curriculum details are not available."));
+    ...head(p.name, `${cap(p.level)}${p.campus ? " · " + p.campus : ""}`),
+    h("div", { class: "toolbar" }, links),
+    h("div", { class: "facts" }, fact("Duration", qf.duration || na(null)), fact("Semesters", qf.semesters ?? na(null)), fact("Mode", qf.mode || na(null)),
+      fact("Medium", qf.medium || na(null)), fact("Applications open", fmtDate(p.application_open)), fact("Applications close", fmtDate(p.application_close))),
+    overview ? h("div", { class: "card", style: "margin-bottom:12px" }, h("h3", {}, "About the programme"), md(overview.trim().slice(0, 1800))) : null,
+    sec("Eligibility", p.eligibility, true), sec("Fees", p.fees, true),
+    ...p.tabs.map((t) => sec(t.title, t.text)),
+    srcLine(p.url, "Source: this programme's page on christuniversity.in"));
 }
 
-function feeTable(f) {
-  return h("div", {}, h("p", { class: "lede" }, `Academic year ${f.academic_year} · ${cap(f.applicant_category)} applicants`),
-    h("div", { class: "tablewrap" }, h("table", {}, h("thead", {}, h("tr", {}, ["Item", "Amount", "Frequency", "Refundable"].map((t) => h("th", {}, t)))),
-      h("tbody", {}, h("tr", {}, h("td", {}, "Application fee"), h("td", {}, money(f.application_fee, f.currency)), h("td", {}, "One-time"), h("td", {}, na(null, "—"))),
-        f.components.map((c) => h("tr", {}, h("td", {}, c.name), h("td", {}, money(c.amount, f.currency)), h("td", {}, c.frequency),
-          h("td", {}, c.refundable == null ? na(null, "Not stated") : c.refundable ? "Yes" : "No")))))));
+// ---------------------------------------------------------------- shared programme picker
+async function programmePicker(onPick) {
+  const all = [];
+  for (let off = 0; ; off += 500) {
+    const d = await api(`/programmes?limit=500&offset=${off}`);
+    all.push(...d.programmes);
+    if (all.length >= d.total) break;
+  }
+  const list = h("datalist", { id: "plist" }, all.map((p) => h("option", { value: p.campus ? `${p.name} — ${p.campus}` : p.name })));
+  const input = h("input", { list: "plist", placeholder: "Type a programme name…", "aria-label": "Programme", style: "min-width:min(100%,420px)" });
+  const pick = () => { const hit = all.find((p) => (p.campus ? `${p.name} — ${p.campus}` : p.name) === input.value); if (hit) onPick(hit); };
+  input.addEventListener("change", pick); input.addEventListener("input", pick);
+  return { list, input };
 }
 
 // ---------------------------------------------------------------- eligibility
-export async function eligibilityPage({ navigate }) {
-  const d = await api("/programmes");
+export async function eligibilityPage() {
   const out = h("div", { "aria-live": "polite" });
-  const sel = h("select", { id: "programme_id", required: true }, d.programmes.map((p) => h("option", { value: p.id }, p.name)));
-  const f = (id, label, input, hint) => h("div", { class: "field" }, h("label", { for: id }, label), input, hint ? h("small", {}, hint) : null);
-  const qual = h("select", { id: "q" }, [["", "Prefer not to say"], ["class12", "Class 12 / equivalent"], ["bachelor", "Bachelor's degree"], ["master", "Master's degree"]].map(([v, t]) => h("option", { value: v }, t)));
-  const status = h("select", { id: "cs" }, [["", "Not specified"], ["completed", "Completed"], ["final_year", "Final year (result pending)"]].map(([v, t]) => h("option", { value: v }, t)));
-  const stream = h("input", { id: "stream", placeholder: "e.g. Science" });
-  const subjects = h("input", { id: "subjects", placeholder: "e.g. Mathematics, Physics" });
-  const pct = h("input", { id: "pct", type: "number", min: "0", max: "100", step: "0.01" });
-  const back = h("select", { id: "bk" }, [["", "Not specified"], ["no", "No backlogs"], ["yes", "I have backlogs"]].map(([v, t]) => h("option", { value: v }, t)));
-  const ent = h("select", { id: "ent" }, [["", "Not specified / not applicable"], ["yes", "Yes, I have taken it"], ["no", "No, not yet"]].map(([v, t]) => h("option", { value: v }, t)));
-  const score = h("input", { id: "score", type: "number", min: "0", step: "0.01" });
-  const country = h("input", { id: "country", placeholder: "e.g. India" });
-  const btn = h("button", { class: "btn", type: "submit" }, "Check preliminary eligibility");
-
-  const form = h("form", { class: "card", novalidate: true, onsubmit: async (e) => {
-    e.preventDefault(); btn.disabled = true; out.replaceChildren(h("div", { class: "skeleton" }));
-    const body = { programme_id: sel.value };
-    if (qual.value) body.highest_qualification = qual.value;
-    if (status.value) body.completion_status = status.value;
-    if (stream.value.trim()) body.stream = stream.value.trim();
-    if (subjects.value.trim()) body.subjects = subjects.value.split(",").map((x) => x.trim()).filter(Boolean);
-    if (pct.value !== "") body.percentage = Number(pct.value);
-    if (back.value) body.has_backlogs = back.value === "yes";
-    if (ent.value) body.entrance_taken = ent.value === "yes";
-    if (score.value !== "") body.entrance_score = Number(score.value);
-    if (country.value.trim()) body.qualification_country = country.value.trim();
-    try { out.replaceChildren(resultCard(await api("/eligibility", { method: "POST", body }))); }
-    catch (err) { out.replaceChildren(h("div", { class: "state err", role: "alert" }, err.message)); }
-    btn.disabled = false;
-  } },
-  h("div", { class: "two" }, f("programme_id", "Programme", sel), f("q", "Highest qualification", qual)),
-  h("div", { class: "two" }, f("stream", "Stream / discipline", stream), f("subjects", "Subjects studied", subjects, "Separate with commas")),
-  h("div", { class: "two" }, f("pct", "Marks (percentage)", pct), f("cs", "Completion status", status)),
-  h("div", { class: "two" }, f("bk", "Backlogs / supplementary exams", back), f("country", "Country of qualification", country)),
-  h("div", { class: "two" }, f("ent", "Entrance examination", ent), f("score", "Entrance score", score)),
-  btn);
-  return h("div", { class: "page" }, ...head("Check my eligibility", "Share only what you know. I compare it with the published criteria and tell you what matched.", d.demo),
-    form, h("div", { style: "height:16px" }), out);
-}
-
-function resultCard(r) {
-  const o = r.result;
-  const cls = o.outcome === "appears_to_meet" ? "met" : o.outcome === "may_not_meet" ? "not" : "unk";
-  const tagFor = { met: "ok", not_met: "bad" };
-  const label = { met: "Matched", not_met: "Not matched", missing_input: "More information needed", criteria_unavailable: "Criteria not published", needs_verification: "Needs official verification" };
-  return h("div", { class: `result ${cls}` }, h("h3", { style: "margin:0 0 4px" }, o.outcome_label),
-    h("p", { class: "lede", style: "margin:0 0 10px" }, "Preliminary indication"),
-    h("ul", { style: "padding-left:1.1em;margin:0" }, o.checks.map((c) => h("li", {}, h("span", { class: `tag ${tagFor[c.status] || ""}` }, label[c.status]), h("b", {}, c.criterion + ": "), c.detail))),
-    r.source ? h("p", { class: "lede", style: "margin:10px 0 0" }, `Source: ${r.source.title}${r.source.academic_year ? " · " + r.source.academic_year : ""}`) : null,
-    r.demo ? h("p", {}, DEMO_TAG()) : null, h("div", { class: "disclaimer" }, o.disclaimer));
+  let chosen = null;
+  const pct = h("input", { type: "number", min: "0", max: "100", step: "0.01", placeholder: "e.g. 72", "aria-label": "Your percentage" });
+  const go = h("button", { class: "btn", type: "button", disabled: true }, "Show published criteria");
+  const run = async () => {
+    if (!chosen) return;
+    out.replaceChildren(h("div", { class: "skeleton" }));
+    try {
+      const r = await api("/eligibility", { method: "POST", body: { programme_id: chosen.id, ...(pct.value !== "" ? { percentage: Number(pct.value) } : {}) } });
+      const cls = r.result.outcome === "may_not_meet" ? "not" : "unk";
+      out.replaceChildren(
+        h("div", { class: `result ${cls}` }, h("h3", { style: "margin:0 0 4px" }, r.result.label), h("p", { style: "margin:0" }, r.result.detail), h("div", { class: "disclaimer" }, r.result.disclaimer)),
+        h("h2", {}, `Published eligibility — ${r.programme.name}`), r.eligibility ? md(r.eligibility) : empty("No eligibility text is published for this programme."),
+        srcLine(r.programme.url));
+    } catch (e) { out.replaceChildren(h("div", { class: "state err", role: "alert" }, e.message)); }
+  };
+  go.addEventListener("click", run);
+  const { list, input } = await programmePicker((p) => { chosen = p; go.disabled = false; });
+  return h("div", { class: "page" }, ...head("Check my eligibility", "Pick a programme to read its published criteria. Add your percentage for a preliminary comparison."),
+    h("div", { class: "card" }, h("div", { class: "field" }, h("label", {}, "Programme"), input, list),
+      h("div", { class: "field" }, h("label", {}, "Your percentage (optional)"), pct, h("small", {}, "I only compare it with percentages mentioned in the published text.")), go),
+    h("div", { style: "height:16px" }), out);
 }
 
 // ---------------------------------------------------------------- admissions / dates
 export async function admissionsPage() {
   const d = await api("/dates");
-  const fmt = (s) => new Date(s + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
-  const sorted = [...d.dates].sort((a, b) => (a.date || "9999").localeCompare(b.date || "9999"));
-  return h("div", { class: "page" }, ...head("Admissions & important dates", "Published dates are shown with their status. Unconfirmed dates are marked clearly.", d.demo),
-    h("ol", { class: "timeline" }, sorted.map((x) => h("li", { class: x.status === "published" ? "" : "tbc" },
-      h("b", {}, x.label), " ", x.status === "published" ? fmt(x.date) : h("span", { class: "tag bad" }, "Date not confirmed"),
-      h("div", { class: "lede", style: "margin:0" }, `${x.academic_year}${x.programme_id ? " · " + x.programme_id.toUpperCase() : " · All programmes"}${x.applicant_type !== "all" ? " · " + x.applicant_type : ""}`)))),
-    h("p", { class: "lede" }, "Application steps, portal statuses and troubleshooting are available in the assistant."),
+  const sorted = [...d.windows].sort((a, b) => String(a.close || "9").localeCompare(String(b.close || "9")));
+  return h("div", { class: "page" }, ...head("Admissions & application dates", "Application windows as listed in the CHRIST programme catalogue."),
+    sorted.length ? h("div", { class: "tablewrap" }, h("table", {}, h("thead", {}, h("tr", {}, ["Level", "Campus", "Opens", "Closes", "Programmes"].map((t) => h("th", {}, t)))),
+      h("tbody", {}, sorted.map((w) => h("tr", {}, h("td", {}, cap(w.level)), h("td", {}, na(w.campus)), h("td", {}, fmtDate(w.open)), h("td", {}, fmtDate(w.close)), h("td", {}, String(w.programmes))))))) : empty("No application dates were found."),
+    srcLine(d.source, "Source: CHRIST programme catalogue"),
+    h("p", { class: "lede" }, "Open a programme for its exact dates, eligibility and fees, or ask the assistant how to apply."),
     h("a", { class: "btn", href: "/", "data-link": "" }, "Ask about the application process"));
 }
 
 // ---------------------------------------------------------------- fees
 export async function feesPage() {
-  const p = await api("/programmes");
-  const box = h("div");
-  const sel = h("select", { "aria-label": "Programme" }, p.programmes.map((x) => h("option", { value: x.id }, x.name)));
-  const cat = h("select", { "aria-label": "Applicant category" }, [["domestic", "Domestic"], ["international", "International"]].map(([v, t]) => h("option", { value: v }, t)));
-  const draw = async () => {
+  const box = h("div", {}, empty("Choose a programme to see its published fee structure."));
+  const { list, input } = await programmePicker(async (p) => {
     box.replaceChildren(h("div", { class: "skeleton" }));
     try {
-      const r = await api(`/fees/${sel.value}?category=${cat.value}`);
-      box.replaceChildren(r.fees ? feeTable(r.fees) : empty("A fee structure for this selection is not available in the current knowledge base. Please contact the Admissions Office."));
+      const { programme } = await api(`/programmes/${p.id}`);
+      box.replaceChildren(programme.fees ? h("div", {}, h("h2", {}, programme.name), md(programme.fees), srcLine(programme.url)) :
+        empty("A fee structure for this programme is not published on the CHRIST website pages I collected. Please contact the Admissions Office."));
     } catch (e) { box.replaceChildren(h("div", { class: "state err", role: "alert" }, e.message)); }
+  });
+  return h("div", { class: "page" }, ...head("Fee structure", "Fees are shown exactly as published, by applicant category. Missing fees are never estimated."),
+    h("div", { class: "toolbar" }, input, list), box);
+}
+
+// ---------------------------------------------------------------- topic pages (scraped pages grouped by subject)
+function topicPage(name, title, lede) {
+  return async function () {
+    const d = await api(`/topic/${name}`);
+    return h("div", { class: "page" }, ...head(title, lede),
+      d.results.length ? h("div", { class: "grid" }, d.results.map((r) => h("div", { class: "card" }, h("h3", {}, r.heading && r.heading !== r.title ? `${r.heading}` : r.title),
+        h("p", { class: "srcline", style: "margin:0 0 8px" }, r.title), md(r.excerpt + (r.excerpt.length >= 700 ? "…" : "")),
+        h("a", { href: r.url, target: "_blank", rel: "noopener noreferrer" }, r.external ? "Source (external)" : "Read on christuniversity.in →"))))
+        : empty("I couldn't find pages on this topic in the information collected from the CHRIST website."));
   };
-  sel.addEventListener("change", draw); cat.addEventListener("change", draw); draw();
-  return h("div", { class: "page" }, ...head("Fee structure", "Amounts are shown with their academic year and applicant category. Missing amounts are never estimated.", p.demo),
-    h("div", { class: "toolbar" }, sel, cat), box);
 }
+export const scholarshipsPage = topicPage("scholarships", "Scholarships & financial assistance", "Pages from the CHRIST website about scholarships and fee support.");
+export const documentsPage = topicPage("documents", "Required documents", "What the CHRIST website says about documents for application and admission.");
+export const hostelPage = topicPage("hostel", "Hostel & accommodation", "Hostel and dining information from the CHRIST website.");
+export const campusesPage = topicPage("campuses", "Campuses & facilities", "Campus and facilities information from the CHRIST website.");
+export const placementsPage = topicPage("placements", "Placements & careers", "Placement and career-support information from the CHRIST website.");
+export const internationalPage = topicPage("international", "International students", "Information for international, NRI and foreign applicants.");
 
-// ---------------------------------------------------------------- scholarships
-export async function scholarshipsPage({ navigate }) {
-  const d = await api("/scholarships");
-  return h("div", { class: "page" }, ...head("Scholarships & concessions", "Only published criteria are shown. Eligibility is never assumed.", d.demo),
-    d.scholarships.length ? h("div", { class: "grid" }, d.scholarships.map((s) => h("div", { class: "card" }, h("h3", {}, s.name), h("p", {}, s.criteria),
-      s.applicable_levels.map((l) => h("span", { class: "tag" }, cap(l))),
-      h("p", {}, h("b", {}, "Amount: "), na(s.amount_description)), h("p", {}, h("b", {}, "Separate application: "), s.separate_application == null ? na(null) : s.separate_application ? "Yes" : "No"),
-      h("p", {}, h("b", {}, "Deadline: "), na(s.deadline)), h("span", { class: "tag" }, s.academic_year)))) : empty("No scholarship information is available."),
-    h("p", {}), askBtn("Are scholarships available?", navigate));
-}
-
-// ---------------------------------------------------------------- documents
-export async function documentsPage() {
-  const list = h("div");
-  const sel = h("select", { "aria-label": "Applicant type" }, [["", "All applicants"], ["undergraduate", "Undergraduate"], ["postgraduate", "Postgraduate"], ["doctoral", "Doctoral"], ["international", "International"]].map(([v, t]) => h("option", { value: v }, t)));
-  let demo = true;
-  const draw = async () => {
-    list.replaceChildren(h("div", { class: "skeleton" }));
-    try {
-      const r = await api(`/documents${sel.value ? "?applicant_type=" + sel.value : ""}`); demo = r.demo;
-      list.replaceChildren(r.documents.length ? h("ul", { class: "checklist" }, r.documents.map((d) => h("li", {},
-        h("input", { type: "checkbox", id: "doc-" + d.id, "aria-labelledby": "lbl-" + d.id }),
-        h("div", { id: "lbl-" + d.id }, h("b", {}, d.name), " ", h("span", { class: "tag" }, cap(d.stage)),
-          d.mandatory == null ? h("span", { class: "tag" }, "Requirement not confirmed") : null,
-          d.notes ? h("div", { class: "lede", style: "margin:0" }, d.notes) : null)))) : empty("No documents listed for this selection."));
-    } catch (e) { list.replaceChildren(h("div", { class: "state err", role: "alert" }, e.message)); }
-  };
-  sel.addEventListener("change", draw); draw();
-  return h("div", { class: "page" }, ...head("Required documents", "Use this checklist to prepare. Ticks stay in your browser only — nothing is uploaded here.", demo),
-    h("div", { class: "toolbar" }, sel), list);
-}
-
-// ---------------------------------------------------------------- campuses
-export async function campusesPage() {
-  const d = await api("/campuses");
-  return h("div", { class: "page" }, ...head("Campuses & facilities", "Campus and hostel information currently available.", d.demo),
-    h("div", { class: "grid" }, d.campuses.map((c) => {
-      const hs = d.hostels.find((x) => x.campus_id === c.id);
-      return h("div", { class: "card" }, h("h3", {}, c.name), h("p", {}, h("b", {}, "Location: "), na(c.location)),
-        h("p", {}, c.facilities.map((f) => h("span", { class: "tag" }, f))),
-        h("p", {}, h("b", {}, "Hostel: "), c.hostel_available == null ? na(null, "Not confirmed") : c.hostel_available ? "Available" : "Not available"),
-        hs ? h("div", { class: "tablewrap" }, h("table", {}, h("tbody", {}, hs.room_types.map((r) => h("tr", {}, h("td", {}, cap(r.type) + " sharing"), h("td", {}, money(r.annual_fee, r.currency) , " / year")))))) : null);
-    })));
-}
-
-// ---------------------------------------------------------------- support
 export async function supportPage({ navigate }) {
-  const d = await api("/contacts"), c = d.contact;
-  const row = (k, v) => h("tr", {}, h("th", { scope: "row" }, k), h("td", {}, v == null ? na(null, "Not provided yet") : v));
-  return h("div", { class: "page" }, ...head("Help & applicant support", "How to reach the Admissions Office.", d.demo),
-    h("div", { class: "card" }, h("h3", {}, c.office), h("div", { class: "tablewrap" }, h("table", {}, h("tbody", {},
-      row("Phone", c.phone), row("Email", c.email), row("Office hours", c.hours), row("Applicant portal", c.portal_url))))),
-    h("div", { class: "disclaimer" }, "The assistant cannot create support tickets, verify payments or documents, or change your application. For those, please contact the Admissions Office directly."),
+  const t = await topicPage("contact", "Help & Admissions contact", "Contact information found on the CHRIST website.")();
+  t.append(h("div", { class: "disclaimer" }, "This assistant is unofficial. It can't create support tickets, verify payments or documents, or change your application. Please contact the CHRIST Admissions Office directly for those."),
     h("p", {}), askBtn("How do I contact the Admissions Office?", navigate),
-    h("h2", {}, "Privacy"), h("p", {}, "Questions you type are sent to the configured AI provider to generate answers. Do not enter passwords, OTPs, card details or identity numbers."));
+    h("h2", {}, "Privacy"), h("p", {}, "Questions you type are processed by the configured AI service to understand what you ask. Do not enter passwords, OTPs, card details or identity numbers."));
+  return t;
 }

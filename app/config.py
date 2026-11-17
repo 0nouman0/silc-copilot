@@ -13,8 +13,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-BRAND_PRODUCT = "SILC Student Applicant Copilot"
-BRAND_UNIVERSITY = os.getenv("UNIVERSITY_NAME", "SILC University")
+BRAND_PRODUCT = "CHRIST Admissions Copilot (unofficial)"
+BRAND_UNIVERSITY = os.getenv("UNIVERSITY_NAME", "CHRIST (Deemed to be University)")
 
 _PROVIDER_DEFAULTS = {
     "openrouter": {"base_url": "https://openrouter.ai/api/v1", "model": "openai/gpt-oss-20b:free"},

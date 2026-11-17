@@ -4,8 +4,8 @@ import { renderMarkdown } from "./md.js";
 
 const KEY = "silc_chat_v1";
 const ACTIONS = [
-  { t: "Explore programmes", d: "Find undergraduate, postgraduate and doctoral programmes.", i: "compass", c: "#4f46e5",
-    p: "Show me the undergraduate and postgraduate programmes available." },
+  { t: "Explore programmes", d: "Browse CHRIST's undergraduate, postgraduate and doctoral programmes.", i: "compass", c: "#4f46e5",
+    p: "Show me the programmes available." },
   { t: "Check my eligibility", d: "See how your qualifications compare with published criteria.", i: "check", c: "#0d9488",
     p: "Help me check my eligibility for a programme." },
   { t: "Understand fees", d: "Explore tuition fees, other charges and payment information.", i: "wallet", c: "#d97706",
@@ -13,8 +13,8 @@ const ACTIONS = [
   { t: "Admission help", d: "Get guidance on applications, documents and deadlines.", i: "help", c: "#7c3aed",
     p: "Guide me through the application process." },
 ];
-const PROMPTS = ["What are the application deadlines?", "Which documents do I need?", "Are scholarships available?",
-  "What are the hostel facilities?", "How does the entrance examination work?", "What placement assistance is available?",
+const PROMPTS = ["What are the application dates?", "What are the fees for the MBA?", "What is the eligibility for BBA?",
+  "Which documents do I need?", "Are scholarships available?", "What are the hostel facilities?",
   "How can international students apply?", "How do I contact the Admissions Office?"];
 const APP_PROMPTS = ["What is the status of this application?", "What are the fees for this programme?",
   "What documents are required?", "What should I do next?"];
@@ -113,7 +113,7 @@ export function mountChat(root, ctx) {
     return h("div", { class: "apps" },
       h("h2", {}, n === 1 ? "I found 1 application associated with your account." : `I found ${n} applications associated with your account.`),
       h("p", { class: "lede" }, "Which application would you like to discuss? ",
-        s.appsDemo ? h("span", { class: "tag demo" }, "Demo data — not live university records") : null),
+        s.appsDemo ? h("span", { class: "tag demo" }, "Demo applicant records — no live CHRIST applicant system") : null),
       h("div", { class: "grid" }, s.apps.map((a) => h("button", {
         class: "appcard", type: "button", "aria-pressed": String(s.activeApp?.application_id === a.application_id), onclick: () => pickApp(a),
       }, h("b", {}, a.programme_name), h("small", {}, `${a.application_id}${a.campus ? " · " + a.campus : ""}`),
@@ -151,8 +151,8 @@ export function mountChat(root, ctx) {
     return h("div", { class: "msg bot" }, h("div", { class: "who", "aria-hidden": "true" }, "AI"),
       h("div", { class: "body" }, h("div", { class: "bubble", html: renderMarkdown(m.content) }),
         m.sources?.length || m.demo ? h("div", { class: "sources" }, m.sources?.length ? "Sources:" : null,
-          (m.sources || []).map((x) => h("span", { class: "src" }, x.title)),
-          m.demo ? h("span", { class: "tag demo" }, "Demo data") : null) : null,
+          (m.sources || []).map((x) => (x.url ? h("a", { class: "src", href: x.url, target: "_blank", rel: "noopener noreferrer" }, x.title) : h("span", { class: "src" }, x.title))),
+          m.demo ? h("span", { class: "tag demo" }, "Demo applicant data") : null) : null,
         isLast && m.followUps?.length && !s.busy ? h("div", { class: "followups" }, m.followUps.map(chip)) : null));
   }
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from collections import defaultdict, deque
 
@@ -10,10 +11,9 @@ from .. import auth
 from ..agent.decision_engine import run_decision_agent
 from ..agent.orchestrator import run_agent
 from ..applicants.adapter import DEMO_USERS, ApplicantApiUnavailable, get_applicant_api
+from ..christ.eligibility_hint import hint
+from ..christ.store import DataNotReady, get_corpus
 from ..config import BRAND_PRODUCT, BRAND_UNIVERSITY, agent_mode, integration_mode, llm_config
-from ..data.models import SourceRef
-from ..data.repository import NotConfigured, get_repository
-from ..eligibility import ApplicantProfile, assess
 from ..llm import LLMError, get_decider, get_llm_provider
 
 router = APIRouter(prefix="/api")
@@ -22,7 +22,8 @@ router = APIRouter(prefix="/api")
 _hits: dict[str, deque] = defaultdict(deque)
 
 
-def _rate_limit(request: Request, limit: int = 20, window: int = 60):
+def _rate_limit(request: Request, window: int = 60):
+    limit = int(os.getenv("CHAT_RATE_LIMIT_PER_MIN", "20"))
     key = request.client.host if request.client else "unknown"
     now, q = time.monotonic(), _hits[key]
     while q and now - q[0] > window:
@@ -32,11 +33,22 @@ def _rate_limit(request: Request, limit: int = 20, window: int = 60):
     q.append(now)
 
 
+def _corpus():
+    try:
+        return get_corpus()
+    except DataNotReady as e:
+        raise HTTPException(503, detail={"code": "data_not_ready", "message": str(e)})
+
+
 # ----------------------------------------------------------------- meta / session
 @router.get("/meta")
 def meta():
     cfg = llm_config()
-    return {"product": BRAND_PRODUCT, "university": BRAND_UNIVERSITY, "mode": integration_mode(),
+    try:
+        data = {"ready": True, **get_corpus().stats()}
+    except DataNotReady as e:
+        data = {"ready": False, "message": str(e)}
+    return {"product": BRAND_PRODUCT, "university": BRAND_UNIVERSITY, "mode": integration_mode(), "data": data,
             "llm": {"provider": cfg.provider, "model": cfg.model, "configured": bool(cfg.api_key), "agent_mode": agent_mode()},
             "demo_login": auth.demo_login_allowed()}
 
@@ -67,7 +79,7 @@ def logout(response: Response):
     return {"ok": True}
 
 
-# ----------------------------------------------------------------- applications (authenticated)
+# ----------------------------------------------------------------- applications (authenticated; mock applicant API)
 @router.get("/applications")
 def applications(request: Request):
     uid = auth.current_user_id(request)
@@ -77,8 +89,7 @@ def applications(request: Request):
     try:
         apps = api.list_applications(uid)
     except ApplicantApiUnavailable:
-        raise HTTPException(503, detail={"code": "live_status_unavailable",
-                                         "message": "Live application information cannot be checked right now."})
+        raise HTTPException(503, detail={"code": "live_status_unavailable", "message": "Live application information cannot be checked right now."})
     return {"demo": api.is_demo, "count": len(apps), "applications": [a.model_dump() for a in apps]}
 
 
@@ -93,8 +104,7 @@ class ChatBody(BaseModel):
     active_application_id: str | None = Field(default=None, max_length=64)
 
 
-_STATUS = {"not_configured": 503, "rate_limited": 429, "timeout": 504, "unavailable": 502,
-           "tools_unsupported": 502, "bad_response": 502}
+_STATUS = {"not_configured": 503, "rate_limited": 429, "timeout": 504, "unavailable": 502, "tools_unsupported": 502, "bad_response": 502}
 
 
 @router.post("/chat")
@@ -120,86 +130,79 @@ async def chat(body: ChatBody, request: Request):
             result = await run_agent(get_llm_provider(), history, user_id=uid, active_application=active)
     except LLMError as e:
         raise HTTPException(_STATUS.get(e.code, 502), detail={"code": e.code, "message": e.message})
-    return {"reply": result.reply, "sources": [s.model_dump() for s in result.sources],
-            "tools_used": result.tools_used, "intent": result.intent, "follow_ups": result.follow_ups, "demo": result.demo,
+    return {"reply": result.reply, "sources": [s.model_dump() for s in result.sources], "tools_used": result.tools_used,
+            "intent": result.intent, "follow_ups": result.follow_ups, "demo": result.demo,
             "active_application_id": active.application_id if active else None}
 
 
-# ----------------------------------------------------------------- data for non-chat pages
-def _repo():
-    try:
-        return get_repository()
-    except NotConfigured:
-        raise HTTPException(503, detail={"code": "data_source_unavailable",
-                                         "message": "The university data source is not connected."})
+# ----------------------------------------------------------------- data for non-chat pages (scraped CHRIST content)
+def _light(p):
+    return {"id": p.id, "name": p.name, "level": p.level, "campus": p.campus, "application_open": p.application_open,
+            "application_close": p.application_close, "duration": p.quick_facts.get("duration"), "url": p.url}
 
 
 @router.get("/programmes")
-def programmes(q: str | None = None, level: str | None = None, campus: str | None = None):
-    r = _repo()
-    return {"demo": r.is_demo, "programmes": [p.model_dump() for p in r.search_programmes(q, level, campus)]}
+def programmes(q: str | None = None, level: str | None = None, campus: str | None = None, offset: int = 0, limit: int = 60):
+    c = _corpus()
+    rows = c.search_programmes(q, level, campus, limit=10_000)
+    limit = max(1, min(limit, 500))
+    return {"total": len(rows), "offset": offset, "programmes": [_light(p) for p in rows[offset:offset + limit]],
+            "campuses": sorted({p.campus for p in c.programmes if p.campus}), "source": "https://christuniversity.in/our-programmes/All/1"}
 
 
 @router.get("/programmes/{programme_id}")
 def programme(programme_id: str):
-    r = _repo()
-    p = r.get_programme(programme_id)
+    p = _corpus().by_id.get(programme_id)
     if not p:
         raise HTTPException(404, detail={"code": "not_found", "message": "Programme not found."})
-    crit, fees = r.get_eligibility(programme_id), r.get_fees(programme_id, "domestic")
-    return {"demo": r.is_demo, "programme": p.model_dump(),
-            "eligibility": crit.model_dump() if crit else None, "fees": fees.model_dump() if fees else None,
-            "dates": [d.model_dump() for d in r.get_dates(programme_id, None)]}
+    return {"programme": {**p.model_dump(exclude={"tabs"}), "tabs": [{"id": t.id, "title": t.title, "text": t.text} for t in p.tabs]}}
 
 
 @router.get("/dates")
 def dates():
-    r = _repo()
-    return {"demo": r.is_demo, "dates": [d.model_dump() for d in r.get_dates(None, None)]}
+    from collections import Counter
+    c = _corpus()
+    w = Counter((p.level, p.campus, p.application_open, p.application_close) for p in c.programmes if p.application_close or p.application_open)
+    return {"windows": [{"level": lv, "campus": cp, "open": o, "close": cl, "programmes": n} for (lv, cp, o, cl), n in sorted(w.items(), key=lambda x: str(x[0]))],
+            "source": "https://christuniversity.in/our-programmes/All/1"}
 
 
-@router.get("/fees/{programme_id}")
-def fees(programme_id: str, category: str = "domestic"):
-    r = _repo()
-    f = r.get_fees(programme_id, category)
-    return {"demo": r.is_demo, "fees": f.model_dump() if f else None}
+TOPICS = {
+    "scholarships": ({"scholarships"}, "scholarship financial assistance freeship"),
+    "documents": ({"admissions"}, "documents required admission application certificates"),
+    "campuses": ({"campus"}, "campus facilities library sports transport"),
+    "hostel": ({"hostel"}, "hostel accommodation dining"),
+    "placements": ({"placements"}, "placement recruiters career"),
+    "international": ({"international"}, "international students nri foreign admission"),
+    "contact": ({"contact", "admissions"}, "admissions office contact phone email helpline"),
+    "about": ({"about"}, "CHRIST University accreditation ranking history"),
+}
 
 
-@router.get("/scholarships")
-def scholarships():
-    r = _repo()
-    return {"demo": r.is_demo, "scholarships": [s.model_dump() for s in r.get_scholarships(None)]}
+@router.get("/topic/{name}")
+def topic(name: str):
+    if name not in TOPICS:
+        raise HTTPException(404, detail={"code": "not_found", "message": "Unknown topic."})
+    cats, query = TOPICS[name]
+    hits = _corpus().search(query, k=12, categories=cats) or _corpus().search(query, k=12)
+    seen, out = set(), []
+    for h in hits:
+        if h.chunk.url in seen:
+            continue
+        seen.add(h.chunk.url)
+        out.append({"title": h.chunk.title, "heading": h.chunk.heading, "url": h.chunk.url, "excerpt": h.chunk.text[:700],
+                    "external": h.chunk.kind == "external"})
+    return {"topic": name, "results": out}
 
 
-@router.get("/documents")
-def documents(applicant_type: str | None = None):
-    r = _repo()
-    return {"demo": r.is_demo, "documents": [d.model_dump() for d in r.get_documents(applicant_type)]}
-
-
-@router.get("/campuses")
-def campuses():
-    r = _repo()
-    return {"demo": r.is_demo, "campuses": [c.model_dump() for c in r.get_campuses(None)],
-            "hostels": [h.model_dump() for h in r.get_hostel(None)]}
-
-
-@router.get("/contacts")
-def contacts():
-    r = _repo()
-    return {"demo": r.is_demo, "contact": r.get_contacts().model_dump()}
-
-
-class EligibilityBody(ApplicantProfile):
+class EligibilityBody(BaseModel):
     programme_id: str
+    percentage: float | None = Field(default=None, ge=0, le=100)
 
 
 @router.post("/eligibility")
 def eligibility(body: EligibilityBody):
-    r = _repo()
-    if not r.get_programme(body.programme_id):
+    p = _corpus().by_id.get(body.programme_id)
+    if not p:
         raise HTTPException(404, detail={"code": "not_found", "message": "Programme not found."})
-    crit = r.get_eligibility(body.programme_id)
-    res = assess(crit, ApplicantProfile(**body.model_dump(exclude={"programme_id"})))
-    src: SourceRef | None = r.source(crit.source_doc_id, crit.academic_year) if crit else None
-    return {"demo": r.is_demo, "result": res.model_dump(), "source": src.model_dump() if src else None}
+    return {"programme": {"id": p.id, "name": p.name, "url": p.url}, "eligibility": p.eligibility, "result": hint(p.eligibility, body.percentage)}

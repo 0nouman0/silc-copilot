@@ -5,3 +5,6 @@ pydantic>=2.7
 python-dotenv>=1.0
 pytest>=8
 pytest-asyncio>=0.23
+beautifulsoup4>=4.12
+lxml>=5
+pypdf>=4

@@ -5,7 +5,7 @@ import json
 from dataclasses import dataclass, field
 
 from ..applicants.adapter import Application
-from ..data.models import SourceRef
+from ..christ.models import SourceRef
 from ..llm.base import LLMProvider, Message
 from ..tools import ToolContext, execute, tool_defs
 from .prompt import build_system_prompt
@@ -15,10 +15,10 @@ EMPTY_FALLBACK = ("I wasn't able to put together an answer from the available in
                   "Please rephrase your question, or contact the Admissions Office.")
 
 _FOLLOW_UPS = {
-    "get_fee_structure": ["What other charges apply?", "Are scholarships available?"],
+    "get_fee_structure": ["Are scholarships available?", "What are the application dates?"],
     "get_eligibility_criteria": ["Help me check my eligibility", "Which documents do I need?"],
-    "assess_preliminary_eligibility": ["Which documents do I need?", "What are the application deadlines?"],
-    "get_admission_dates": ["What is the application fee?", "How do I apply?"],
+    "assess_preliminary_eligibility": ["Which documents do I need?", "What are the application dates?"],
+    "get_admission_dates": ["How do I apply?", "What are the fees?"],
     "get_programme_details": ["What is the eligibility for this programme?", "What are the fees?"],
     "search_programmes": ["Compare these programmes", "Help me check my eligibility"],
     "get_scholarships": ["How do I apply for a scholarship?", "What are the fees?"],

@@ -8,7 +8,8 @@ const $ = (id) => document.getElementById(id);
 
 const NAV = [["/", "Home"], ["/programmes", "Explore Programmes"], ["/admissions", "Admissions"], ["/support", "Help"]];
 const QUICK = [["/programmes", "Explore Programmes"], ["/eligibility", "Check Eligibility"], ["/admissions", "Application Dates"],
-  ["/fees", "Fee Structure"], ["/scholarships", "Scholarships"], ["/documents", "Documents"], ["/campuses", "Campuses"], ["/support", "Contact Admissions"]];
+  ["/fees", "Fee Structure"], ["/scholarships", "Scholarships"], ["/documents", "Documents"], ["/hostel", "Hostel"], ["/campuses", "Campuses"],
+  ["/placements", "Placements"], ["/international", "International"], ["/support", "Contact Admissions"]];
 
 const ROUTES = [
   [/^\/$/, "home"],
@@ -19,7 +20,10 @@ const ROUTES = [
   [/^\/fees$/, P.feesPage],
   [/^\/scholarships$/, P.scholarshipsPage],
   [/^\/documents$/, P.documentsPage],
+  [/^\/hostel$/, P.hostelPage],
   [/^\/campuses$/, P.campusesPage],
+  [/^\/placements$/, P.placementsPage],
+  [/^\/international$/, P.internationalPage],
   [/^\/support$/, P.supportPage],
 ];
 
@@ -49,10 +53,10 @@ function renderHeader() {
   } }, h("span", { class: "avatar", "aria-hidden": "true" }, name[0]), s.authenticated ? name : "Sign in");
 
   if (s.authenticated) {
-    pop.append(h("div", { class: "lbl" }, "Signed in (demo account)"),
+    pop.append(h("div", { class: "lbl" }, "Signed in as a demo applicant (no live CHRIST system)"),
       h("button", { type: "button", role: "menuitem", onclick: async () => { await api("/session/logout", { method: "POST" }); sessionStorage.removeItem("silc_chat_v1"); await refreshSession(); render(); } }, "Sign out"));
   } else if (s.demo_users.length) {
-    pop.append(h("div", { class: "lbl" }, "Demo sign-in (sample applicants)"), ...s.demo_users.map((u) => h("button", {
+    pop.append(h("div", { class: "lbl" }, "Demo sign-in (mock applicant records)"), ...s.demo_users.map((u) => h("button", {
       type: "button", role: "menuitem", onclick: async () => { await api("/session/demo-login", { method: "POST", body: { user_id: u.id } }); sessionStorage.removeItem("silc_chat_v1"); await refreshSession(); render(); },
     }, u.name)));
   } else {
@@ -63,7 +67,7 @@ function renderHeader() {
 
   $("topbar").replaceChildren(
     h("a", { class: "brand", href: "/" }, h("span", { class: "mark", html: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 19l7-12 7 12"/></svg>' }),
-      h("span", {}, "SILC Student Applicant Copilot", h("small", {}, state.meta?.university || ""))),
+      h("span", {}, "CHRIST Admissions Copilot", h("small", {}, "Unofficial assistant · " + (state.meta?.university || "")))),
     h("nav", { class: "nav", "aria-label": "Primary" }, NAV.map(([href, label]) => h("a", { href, "aria-current": path === href || (href !== "/" && path.startsWith(href)) ? "page" : null }, label))),
     h("div", { class: "menu" }, btn, pop));
 
@@ -73,7 +77,9 @@ function renderHeader() {
 function renderChrome() {
   const m = state.meta;
   const b = $("demo-banner");
-  if (m?.mode === "demo") { b.hidden = false; b.textContent = "Demo mode: all programme data and applicant records are fictional samples, not live university information."; }
+  const d = m?.data;
+  if (d?.ready) { b.hidden = false; b.textContent = `Unofficial assistant. Answers come from CHRIST's public website (christuniversity.in), collected ${String(d.scraped_at || "").slice(0, 10)} · ${d.programmes} programmes, ${d.pages} pages. Please confirm important details with the Admissions Office.`; }
+  else if (d) { b.hidden = false; b.textContent = "Website data has not been collected yet. Run: python -m scraper.run"; }
   else b.hidden = true;
   $("foot").replaceChildren("Answers are based on available university information. ",
     h("button", { class: "linkbtn", type: "button", onclick: openPrivacy }, "Privacy & data use"));
@@ -104,10 +110,10 @@ async function render() {
   const hit = ROUTES.map(([re, view, names]) => [re.exec(path), view, names]).find(([m]) => m);
   if (!hit) {
     main.replaceChildren(h("div", { class: "page" }, h("div", { class: "state" }, h("h1", {}, "Page not found"), h("a", { class: "btn", href: "/", "data-link": "" }, "Back to home"))));
-    document.title = "Not found · SILC Copilot"; return;
+    document.title = "Not found · CHRIST Admissions Copilot"; return;
   }
   const [m, view, names] = hit;
-  document.title = (path === "/" ? "Admissions Assistant" : NAV.concat(QUICK).find(([p]) => p === path)?.[1] || "Programme") + " · SILC Copilot";
+  document.title = (path === "/" ? "Admissions Assistant" : NAV.concat(QUICK).find(([p]) => p === path)?.[1] || "Programme") + " · CHRIST Admissions Copilot";
   if (view === "home") { mountChat(main, { session: () => state.session, navigate }); return; }
   main.replaceChildren(P.loading());
   const params = {}; (names || []).forEach((n, i) => { params[n] = decodeURIComponent(m[i + 1]); });
