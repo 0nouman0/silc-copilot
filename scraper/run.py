@@ -521,8 +521,11 @@ def status() -> int:
 def cli(argv: list[str]) -> int:
     if argv and argv[0] == "status":
         return status()
+    if argv and argv[0] == "bundle":
+        from .bundle import cli as bundle_cli
+        return bundle_cli(argv[1:])
     ap = argparse.ArgumentParser(prog="scraper", description="Scrape CHRIST public website data into data/christ/")
-    ap.add_argument("command", nargs="?", choices=["run", "status"], default="run")
+    ap.add_argument("command", nargs="?", choices=["run", "status", "bundle"], default="run")
     ap.add_argument("--max-pages", type=int, default=6000)
     ap.add_argument("--limit-programmes", type=int, default=None)
     a = ap.parse_args(argv)

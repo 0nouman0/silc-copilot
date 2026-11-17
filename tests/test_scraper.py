@@ -227,3 +227,69 @@ def test_status_reports_partial_checkpoint(monkeypatch, tmp_path, capsys):
     S.cli(["status"])
     out = capsys.readouterr().out
     assert "partial" in out and "crawl-1500" in out and "programmes=348" in out and "pages=900" in out
+
+
+# ------------------------------------------------------------------ deployment bundle (Vercel has no scrape folder)
+def _scrape_output(d, pdf_cats=("admissions", "examination", "fees", "general")):
+    from tests.conftest import PAGES, PROGRAMMES
+    pages = [dict(p, depth=1, fetched_at="2026-11-17") for p in PAGES]
+    for i, cat in enumerate(pdf_cats):
+        pages.append({"url": f"https://christuniversity.in/uploads/{cat}{i}.pdf", "host": "christuniversity.in", "title": f"{cat}.pdf", "kind": "pdf",
+                      "category": cat, "description": "PDF", "depth": 9, "text": f"{cat} pdf text. " * 400})
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "programmes.json").write_text(json.dumps(PROGRAMMES), "utf-8")
+    (d / "pages.jsonl").write_text("\n".join(json.dumps(p) for p in pages), "utf-8")
+    (d / "meta.json").write_text(json.dumps({"complete": True, "scraped_at": "2026-11-17T10:00:00+00:00"}), "utf-8")
+
+
+def test_bundle_is_compressed_trimmed_and_loadable(tmp_path):
+    from scraper import bundle as B
+    src, out = tmp_path / "src", tmp_path / "out"
+    _scrape_output(src)
+    r = B.build(src=src, out=out, pdf_chars=500, max_pdf_mb=1)
+    assert (out / "programmes.json.gz").exists() and (out / "pages.jsonl.gz").exists() and not (out / "pages.jsonl").exists()
+    assert r["pdfs_kept"] == 2 and r["pdfs_dropped"] == 2  # admissions + fees kept; examination + general dropped
+    c = Corpus(out)  # the app reads .gz directly
+    assert len(c.programmes) == 6 and c.resolve("mba fees").best.id == "334" and c.search("hostel registration")
+    kept_pdf = [p for p in c.pages if p["kind"] == "pdf"]
+    assert len(kept_pdf) == 2 and all(len(p["text"]) <= 500 for p in kept_pdf) and all("depth" not in p for p in c.pages)
+    assert json.loads((out / "meta.json").read_text())["bundle"]["pdfs_kept"] == 2
+
+
+def test_bundle_respects_total_pdf_budget_and_is_deterministic(tmp_path):
+    from scraper import bundle as B
+    src = tmp_path / "src"
+    _scrape_output(src, pdf_cats=("admissions", "fees", "scholarships", "hostel"))
+    tiny = B.build(src=src, out=tmp_path / "o1", pdf_chars=100_000, max_pdf_mb=0.0001)  # budget smaller than any one PDF
+    assert tiny["pdfs_kept"] == 0
+    B.build(src=src, out=tmp_path / "o2", max_pdf_mb=5)
+    B.build(src=src, out=tmp_path / "o3", max_pdf_mb=5)
+    assert (tmp_path / "o2" / "pages.jsonl.gz").read_bytes() == (tmp_path / "o3" / "pages.jsonl.gz").read_bytes()  # clean git diffs
+
+
+def test_bundle_cli_and_partial_warning(monkeypatch, tmp_path, capsys):
+    from scraper import bundle as B
+    src = tmp_path / "src"
+    _scrape_output(src)
+    (src / "meta.json").write_text(json.dumps({"complete": False}))
+    monkeypatch.setattr(B, "SCRAPE_ROOT", src)
+    monkeypatch.setattr(B, "OUT", tmp_path / "out")
+    monkeypatch.setattr(B, "build", lambda **kw: B.build.__wrapped__(**kw) if hasattr(B.build, "__wrapped__") else {"out": "x", "programmes": 6, "pages": 7, "pdfs_kept": 0, "pdfs_dropped": 0, "complete": False, "compressed_mb": 0.1})
+    assert S.cli(["bundle"]) == 0
+    assert "partial" in capsys.readouterr().out
+
+
+def test_data_dir_prefers_live_scrape_then_falls_back_to_deploy_bundle(monkeypatch, tmp_path):
+    from app.christ import store
+    live, deploy = tmp_path / "live", tmp_path / "deploy"
+    deploy.mkdir()
+    (deploy / "programmes.json.gz").write_bytes(b"x")
+    monkeypatch.delenv("CHRIST_DATA_DIR", raising=False)
+    monkeypatch.setattr(store, "DEFAULT_DIR", live)
+    monkeypatch.setattr(store, "DEPLOY_DIR", deploy)
+    assert store.data_dir() == deploy           # Vercel: no scrape folder -> bundle
+    live.mkdir()
+    (live / "programmes.json").write_text("[]")
+    assert store.data_dir() == live             # local dev: fresher live scrape wins
+    monkeypatch.setenv("CHRIST_DATA_DIR", str(tmp_path / "explicit"))
+    assert store.data_dir() == tmp_path / "explicit"

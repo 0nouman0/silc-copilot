@@ -109,3 +109,28 @@ pytest        # 97 backend tests against a small fixture corpus (no network, no 
 - Data is only as current as the last scrape and only what CHRIST publishes publicly. Confirm important details with the Admissions Office.
 - Support tickets, payment verification and applying on a student's behalf are intentionally not implemented.
 - Respect CHRIST's website terms when scraping; keep the polite defaults and consider asking the university for an official data feed.
+
+## Deploying to Vercel
+
+Vercel builds from git and has no `data/` folder (it is gitignored), so deployments read a **compressed bundle** instead:
+
+```bash
+python scrape.py                # collect the data (once; see above)
+python scrape.py bundle         # -> deploy_data/christ/*.gz  (~4 MB now; trimmed + compressed, PDFs limited to admission-relevant ones)
+git add deploy_data && git commit -m "data: refresh CHRIST bundle" && git push
+```
+The app uses `data/christ/` when it exists (local dev) and otherwise `deploy_data/christ/`. Cold start loads and indexes the bundle in ~2–3 s.
+`requirements.txt` holds only runtime dependencies (the scraper and tests use `requirements-dev.txt`); `.vercelignore` keeps `data/`, `tests/`, `scraper/` and `.venv` out of the upload.
+
+Set these in **Vercel → Project → Settings → Environment Variables** (secrets are never read from git):
+
+| Variable | Value |
+|---|---|
+| `LLM_PROVIDER` | `openrouter` |
+| `LLM_API_KEY` | your OpenRouter key |
+| `LLM_MODEL` | `perplexity/pplx-decider-flash-v1.3:free` |
+| `SESSION_SECRET` | a long random string (required if `INTEGRATION_MODE=production`) |
+| `CHAT_RATE_LIMIT_PER_MIN` | optional, default 20 per IP per instance |
+
+Refresh the data by re-running the scrape, re-bundling, committing and pushing (Vercel redeploys on push).
+The "my applications" demo uses a **mock** applicant API; no live CHRIST system is connected.

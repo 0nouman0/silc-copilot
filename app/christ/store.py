@@ -8,6 +8,7 @@ did not publish simply is not in the corpus.
 """
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
 import math
@@ -20,7 +21,9 @@ from pathlib import Path
 
 from .models import Programme, SourceRef, Tab
 
-DEFAULT_DIR = Path(__file__).resolve().parents[2] / "data" / "christ"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_DIR = PROJECT_ROOT / "data" / "christ"          # live scrape output (local, gitignored)
+DEPLOY_DIR = PROJECT_ROOT / "deploy_data" / "christ"    # compact bundle shipped with deployments (python scrape.py bundle)
 MIN_SCORE = 3.0  # BM25 below this => treated as "no relevant information"
 STOP = {"the", "a", "an", "of", "to", "is", "are", "and", "or", "in", "on", "for", "i", "my", "do", "does", "what", "how", "can", "it", "me",
         "with", "if", "be", "this", "that", "at", "by", "from", "will", "there", "you", "your", "we", "our", "any", "about", "which", "who",
@@ -72,6 +75,21 @@ def clean_popup(text: str | None) -> str | None:
     while lines and lines[0].strip().lower() in ("admissions", "eligibility criteria", "admission", "fees", "fee structure"):
         lines.pop(0)
     return "\n".join(lines).strip() or None
+
+
+def find_data_file(directory: Path, name: str) -> Path | None:
+    """`name` or `name.gz` (deployment bundles are compressed)."""
+    for cand in (directory / name, directory / (name + ".gz")):
+        if cand.exists():
+            return cand
+    return None
+
+
+def read_data_file(path: Path) -> str:
+    if path.suffix == ".gz":
+        with gzip.open(path, "rt", encoding="utf-8") as fh:
+            return fh.read()
+    return path.read_text("utf-8")
 
 
 class DataNotReady(Exception):
@@ -166,15 +184,16 @@ def _split(text: str, limit: int = 1100) -> list[tuple[str, str]]:
 
 class Corpus:
     def __init__(self, directory: Path):
-        pj, pg, mj = directory / "programmes.json", directory / "pages.jsonl", directory / "meta.json"
-        if not pj.exists():
-            raise DataNotReady(f"Scraped data not found in {directory}. Run: python -m scraper.run")
-        self.programmes = [Programme.model_validate(p) for p in json.loads(pj.read_text("utf-8"))]
+        pj, pg, mj = find_data_file(directory, "programmes.json"), find_data_file(directory, "pages.jsonl"), directory / "meta.json"
+        if pj is None:
+            raise DataNotReady(f"CHRIST website data not found in {directory}. Collect it with: python scrape.py "
+                               "(for deployments, build the bundle with: python scrape.py bundle, then commit deploy_data/)")
+        self.programmes = [Programme.model_validate(p) for p in json.loads(read_data_file(pj))]
         for p in self.programmes:
             p.eligibility, p.fees = clean_popup(p.eligibility), clean_popup(p.fees)
         self.by_id = {p.id: p for p in self.programmes}
         self.meta = json.loads(mj.read_text("utf-8")) if mj.exists() else {}
-        self.pages = [json.loads(ln) for ln in pg.read_text("utf-8").splitlines() if ln.strip()] if pg.exists() else []
+        self.pages = [json.loads(ln) for ln in read_data_file(pg).splitlines() if ln.strip()] if pg else []
         self.chunks: list[Chunk] = []
         self._build_chunks()
         self._build_index()
@@ -381,12 +400,15 @@ RELOAD_CHECK_S = 20.0
 
 
 def data_dir() -> Path:
-    return Path(os.getenv("CHRIST_DATA_DIR") or DEFAULT_DIR)
+    """CHRIST_DATA_DIR if set; else the live scrape folder when present (local dev); else the committed deployment bundle (Vercel)."""
+    if os.getenv("CHRIST_DATA_DIR"):
+        return Path(os.environ["CHRIST_DATA_DIR"])
+    return DEFAULT_DIR if find_data_file(DEFAULT_DIR, "programmes.json") else DEPLOY_DIR
 
 
 def _files_stamp(d: Path) -> tuple:
     out = []
-    for name in ("programmes.json", "pages.jsonl", "meta.json"):
+    for name in ("programmes.json", "programmes.json.gz", "pages.jsonl", "pages.jsonl.gz", "meta.json"):
         try:
             st = (d / name).stat()
             out.append((st.st_mtime_ns, st.st_size))

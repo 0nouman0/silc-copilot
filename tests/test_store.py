@@ -81,7 +81,7 @@ def test_tokenizer_handles_dots_and_plurals():
 def test_missing_data_dir_raises_clear_error(tmp_path):
     with pytest.raises(DataNotReady) as e:
         Corpus(tmp_path / "empty")
-    assert "python -m scraper.run" in str(e.value)
+    assert "python scrape.py" in str(e.value)
 
 
 # ---------------------------------------------------------------- eligibility hint

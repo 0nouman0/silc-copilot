@@ -190,7 +190,7 @@ async def test_missing_scraped_data_gives_clear_message(monkeypatch, tmp_path):
     monkeypatch.setenv("CHRIST_DATA_DIR", str(tmp_path / "none"))
     reset_corpus()
     r, _ = await run("programme_fees", "mba fees")
-    assert "python -m scraper.run" in r.reply
+    assert "python scrape.py" in r.reply
 
 
 # ---------------------------------------------------------------- applicant flows (mock API, ownership enforced)
