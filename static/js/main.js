@@ -78,7 +78,7 @@ function renderChrome() {
   const m = state.meta;
   const b = $("demo-banner");
   const d = m?.data;
-  if (d?.ready) { b.hidden = false; b.textContent = `Unofficial assistant. Answers come from CHRIST's public website (christuniversity.in), collected ${String(d.scraped_at || "").slice(0, 10)} · ${d.programmes} programmes, ${d.pages} pages. Please confirm important details with the Admissions Office.`; }
+  if (d?.ready) { b.hidden = false; b.textContent = `Unofficial assistant. Answers come from CHRIST's public website (christuniversity.in), collected ${String(d.scraped_at || "").slice(0, 10)} · ${d.programmes} programmes, ${d.pages} pages. Please confirm important details with the Admissions Office.${d.complete === false ? " (Data collection is still in progress, so some information may be missing.)" : ""}`; }
   else if (d) { b.hidden = false; b.textContent = "Website data has not been collected yet. Run: python -m scraper.run"; }
   else b.hidden = true;
   $("foot").replaceChildren("Answers are based on available university information. ",

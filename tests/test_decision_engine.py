@@ -6,6 +6,7 @@ from app.applicants.adapter import DemoApplicantApi
 from app.config import agent_mode
 from app.llm import LLMError
 from app.llm.decisions import DecisionsClient
+from tests.conftest import CLOSE, OPEN, fmt
 
 API = DemoApplicantApi()
 
@@ -83,7 +84,7 @@ async def test_history_resolves_follow_up_question():
 
 async def test_programme_details_and_curriculum():
     d, _ = await run("programme_details", "tell me about mba")
-    assert "Bangalore Central Campus" in d.reply and "2 years" in d.reply and "6 December 2026" in d.reply and "Apply online" in d.reply
+    assert "Bangalore Central Campus" in d.reply and "2 years" in d.reply and fmt(CLOSE) in d.reply and "Apply online" in d.reply
     c, _ = await run("curriculum", "mba curriculum")
     assert "Managerial Economics" in c.reply
     nc, _ = await run("curriculum", "bba curriculum")
@@ -109,9 +110,9 @@ async def test_bare_percentage_after_bot_asked():
 
 async def test_dates_windows_and_programme_specific():
     g, _ = await run("dates", "what are the application dates")
-    assert "Bangalore Central Campus" in g.reply and "6 December 2026" in g.reply
+    assert "Bangalore Central Campus" in g.reply and fmt(CLOSE) in g.reply and "Open now" in g.reply
     p, _ = await run("dates", "mba application dates")
-    assert "Application dates — Master of Business Administration (MBA)" in p.reply and "15 October 2026" in p.reply
+    assert "Application dates — Master of Business Administration (MBA)" in p.reply and fmt(OPEN) in p.reply and "Open now" in p.reply
 
 
 async def test_selection_process_uses_programme_section():

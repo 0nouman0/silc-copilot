@@ -13,6 +13,7 @@ import json
 import math
 import os
 import re
+from urllib.parse import urlsplit
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -33,6 +34,44 @@ ABBR = {
     "bhm": "bachelor hotel management", "bdes": "bachelor design", "barch": "bachelor architecture", "phd": "doctor philosophy",
     "bfa": "bachelor fine arts", "mfa": "master fine arts", "bpa": "bachelor performing arts", "mpa": "master performing arts",
 }
+
+
+GENERIC_TITLE = re.compile(r"^\s*(CHRIST( UNIVERSITY)?( \(Deemed to be University\))?|CHRIST CUx|Home|Index)\s*$", re.I)
+SLUG_PREFIX_SKIP = {"center", "centre", "c", "departments", "admission", "view-pdf", "main-campus"}
+SLUG_TOO_GENERIC = {"contact", "contact-us", "contact-us.php", "home", "index", "about", "about-us", "overview", "introduction"}
+
+
+def humanize(slug: str) -> str:
+    s = re.sub(r"\.(php|html?)$", "", slug)
+    s = re.sub(r"[-_]+", " ", s).strip()
+    return s[:1].upper() + s[1:] if s else s
+
+
+def page_title(title: str, url: str) -> str:
+    """Most CHRIST pages share the HTML title 'CHRIST UNIVERSITY'; derive a meaningful one from the URL path."""
+    if title and not GENERIC_TITLE.match(title):
+        return title
+    segs = [x for x in urlsplit(url).path.split("/") if x]
+    if not segs:
+        return title or url
+    last = segs[-1]
+    if last.lower() in SLUG_TOO_GENERIC and len(segs) > 1:
+        prev = next((x for x in reversed(segs[:-1]) if x.lower() not in SLUG_PREFIX_SKIP and (len(x) > 3 or (len(x) >= 2 and x.isupper()))), None)
+        if prev and prev.isupper() and len(prev) <= 4:  # a centre code such as IS / CR: keep it as a qualifier
+            return f"{humanize(last)} ({prev})"
+        return f"{humanize(prev)} — {humanize(last)}" if prev else humanize(last)
+    parent = segs[-2] if len(segs) > 1 and segs[-2].lower() not in SLUG_PREFIX_SKIP and len(segs[-2]) > 3 else None
+    return f"{humanize(parent)}: {humanize(last)}" if parent and parent.lower() != last.lower() else humanize(last)
+
+
+def clean_popup(text: str | None) -> str | None:
+    """Drop extraction debris from the Eligibility/Fees popups (stray counters, repeated section headers)."""
+    if not text:
+        return text
+    lines = [ln for ln in text.split("\n") if not re.fullmatch(r"\d{1,2}", ln.strip())]
+    while lines and lines[0].strip().lower() in ("admissions", "eligibility criteria", "admission", "fees", "fee structure"):
+        lines.pop(0)
+    return "\n".join(lines).strip() or None
 
 
 class DataNotReady(Exception):
@@ -88,10 +127,11 @@ class Hit:
 class Resolution:
     best: Programme | None
     candidates: list[Programme]
+    distinct: int = 0  # distinct programmes among candidates (campus listings / "(MBA)"-style naming variants count once)
 
     @property
     def ambiguous(self) -> bool:
-        return len(self.candidates) > 1
+        return self.distinct > 1
 
 
 def _split(text: str, limit: int = 1100) -> list[tuple[str, str]]:
@@ -127,12 +167,14 @@ def _split(text: str, limit: int = 1100) -> list[tuple[str, str]]:
 class Corpus:
     def __init__(self, directory: Path):
         pj, pg, mj = directory / "programmes.json", directory / "pages.jsonl", directory / "meta.json"
-        if not pj.exists() or not pg.exists():
+        if not pj.exists():
             raise DataNotReady(f"Scraped data not found in {directory}. Run: python -m scraper.run")
         self.programmes = [Programme.model_validate(p) for p in json.loads(pj.read_text("utf-8"))]
+        for p in self.programmes:
+            p.eligibility, p.fees = clean_popup(p.eligibility), clean_popup(p.fees)
         self.by_id = {p.id: p for p in self.programmes}
         self.meta = json.loads(mj.read_text("utf-8")) if mj.exists() else {}
-        self.pages = [json.loads(ln) for ln in pg.read_text("utf-8").splitlines() if ln.strip()]
+        self.pages = [json.loads(ln) for ln in pg.read_text("utf-8").splitlines() if ln.strip()] if pg.exists() else []
         self.chunks: list[Chunk] = []
         self._build_chunks()
         self._build_index()
@@ -144,6 +186,7 @@ class Corpus:
 
     def _build_chunks(self):
         for pg in self.pages:
+            pg["title"] = page_title(pg.get("title", ""), pg["url"])
             for heading, body in _split(pg["text"]):
                 if len(body) >= 40:
                     self._add(text=body, heading=heading or pg["title"], title=pg["title"] or pg["url"], url=pg["url"], kind=pg["kind"],
@@ -186,10 +229,12 @@ class Corpus:
             df.update(toks)
         n = max(len(self.programmes), 1)
         self.name_idf = {t: math.log(1 + n / c) for t, c in df.items()}
+        # programme identity ignoring a name's own abbreviation: "Master of Business Administration" == "... (MBA)"
+        self.name_key = {pid: frozenset(t for t in nt if not (t in ABBR_TOKENS and ABBR_TOKENS[t] <= nt)) for pid, nt in self.name_tokens.items()}
 
     # ------------------------------------------------------------------ search
     def search(self, query: str, *, k: int = 4, categories: set[str] | None = None, kinds: set[str] | None = None,
-               programme_id: str | None = None, min_score: float = MIN_SCORE) -> list[Hit]:
+               programme_id: str | None = None, min_score: float = MIN_SCORE, url_rx: str | None = None) -> list[Hit]:
         q = set(tokenize(query))
         if not q:
             return []
@@ -214,6 +259,8 @@ class Corpus:
                 continue
             if categories and c.category not in categories:
                 continue
+            if url_rx and not re.search(url_rx, c.url, re.I):
+                continue
             if kinds and c.kind not in kinds:
                 continue
             if s >= min_score:
@@ -230,63 +277,92 @@ class Corpus:
         return out
 
     # ------------------------------------------------------------------ programmes
+    def _units(self, text: str) -> list[tuple]:
+        """What the user typed, as (token, tokens it stands for, idf mass, is_abbreviation). Words that appear in no
+        programme name ("fees", "apply") are noise and are dropped."""
+        units = []
+        for t in dict.fromkeys(tokenize(text)):
+            if t in ABBR:
+                toks = {t} | ABBR_TOKENS[t]
+                mass = max((self.name_idf.get(x, 0.0) for x in toks), default=0.0)
+                if mass:
+                    units.append((t, toks, mass, True))
+            elif t in self.name_idf:
+                units.append((t, {t}, self.name_idf[t], False))
+        return units
+
+    def _satisfies(self, pid: str, unit: tuple) -> bool:
+        t, _toks, _mass, is_abbr = unit
+        nt = self.name_tokens[pid]
+        return (t in nt or ABBR_TOKENS[t] <= nt) if is_abbr else (t in nt)
+
     def search_programmes(self, query: str | None = None, level: str | None = None, campus: str | None = None, limit: int = 50) -> list[Programme]:
-        qt = set(tokenize(query or ""))
-        out = []
-        for p in self.programmes:
-            if level and p.level != level:
-                continue
-            if campus and (not p.campus or campus.lower() not in p.campus.lower()):
-                continue
-            if qt:
-                nt = self.name_tokens[p.id] | set(tokenize(p.campus or ""))
-                exp = set()
-                for t in list(qt):
-                    exp.update(tokenize(ABBR.get(t, "")))
-                if not (qt | exp) & nt:
-                    continue
-            out.append(p)
-        if qt:
-            def rel(p):
-                nt = self.name_tokens[p.id]
-                return -sum(self.name_idf.get(t, 0) for t in qt & nt)
-            out.sort(key=rel)
-        return out[:limit]
+        """List programmes matching ALL typed words (abbreviations count by literal or full phrase); relax to ANY only if none do."""
+        pool = [p for p in self.programmes if (not level or p.level == level) and (not campus or (p.campus and campus.lower() in p.campus.lower()))]
+        if query and tokenize(query):
+            units = self._units(query)
+            if not units:
+                return []
+            strict = [p for p in pool if all(self._satisfies(p.id, u) for u in units)]
+            pool = strict or [p for p in pool if any(self._satisfies(p.id, u) for u in units)]
+            pool.sort(key=lambda p: (len(self.name_tokens[p.id]), p.name))
+        return pool[:limit]
 
     def resolve(self, text: str) -> Resolution:
-        """Map a free-text mention to catalogue programme(s). Ambiguity is reported, never guessed."""
-        raw = tokenize(text)
-        q = set(raw)
-        for t in raw:
-            q.update(tokenize(ABBR.get(t, "")))
-        if not q:
+        """Map a free-text mention to catalogue programme(s). Ambiguity is reported, never guessed.
+
+        Scoring is an F1 of precision (how much of what the user typed the name accounts for) and recall (how much
+        of the name the user typed), so a short unrelated name cannot win on coverage alone. Typed abbreviations
+        (MBA, BBA, B.Com) must be satisfied literally or by their full phrase. An exact name match wins outright.
+        """
+        typed = list(dict.fromkeys(tokenize(text)))
+        units = self._units(text)
+        if not units:
             return Resolution(None, [])
-        scored = []
+        typed_set, qmass = set(typed), sum(u[2] for u in units)
+        rows = []
         for p in self.programmes:
             nt = self.name_tokens[p.id]
             if not nt:
                 continue
-            matched = q & nt
-            # a name's own abbreviation token (e.g. 'mba') counts as matched when the user typed the full phrase
-            for t in nt:
-                full = ABBR_TOKENS.get(t)
-                if full and full <= q:
-                    matched = matched | {t}
+            sat, matched, abbr_ok = 0.0, set(), True
+            for t, toks, mass, is_abbr in units:
+                ok = (t in nt or ABBR_TOKENS[t] <= nt) if is_abbr else (t in nt)
+                if ok:
+                    sat += mass
+                    matched |= toks & nt
+                elif is_abbr:
+                    abbr_ok = False
+            for a in nt:  # the name's own abbreviation is covered when the user typed the full phrase
+                if a in ABBR_TOKENS and ABBR_TOKENS[a] <= typed_set:
+                    matched.add(a)
             if not matched:
                 continue
-            mass = sum(self.name_idf[t] for t in matched)
-            total = sum(self.name_idf[t] for t in nt)
-            # a bare abbreviation like "mba" must literally appear in the user's words OR be expanded fully
-            scored.append((mass / total, mass, p))
-        if not scored:
+            prec = sat / qmass
+            rec = sum(self.name_idf[x] for x in matched) / sum(self.name_idf[x] for x in nt)
+            if prec > 0 and rec > 0:
+                rows.append((round(2 * prec * rec / (prec + rec), 3), prec, rec, abbr_ok, p))
+        if not rows:
             return Resolution(None, [])
-        scored = [(round(sc, 3), m, p) for sc, m, p in scored]  # float noise must not decide ties
-        scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
-        best, best_mass = scored[0][0], scored[0][1]
-        if best < 0.62:
+        if any(r[3] for r in rows):  # typed abbreviations are strict whenever some programme satisfies them all
+            rows = [r for r in rows if r[3]]
+        rows.sort(key=lambda r: r[0], reverse=True)
+
+        def done(cands: list[Programme]) -> Resolution:
+            cands = cands[:8]
+            return Resolution(cands[0], cands, len({self.name_key[p.id] for p in cands}))
+
+        exact = [r[4] for r in rows if r[1] >= 0.999 and r[2] >= 0.999]
+        if exact:
+            return done(exact)
+        # everything the user typed is satisfied by these programmes (they only add more words): list them, don't pick one
+        comps = [r[4] for r in rows if r[1] >= 0.999]
+        if comps:
+            return done(comps)
+        best = rows[0][0]
+        if best < 0.5:
             return Resolution(None, [])
-        cands = [p for s, m, p in scored if s >= best - 0.02 and m >= best_mass * 0.97]
-        return Resolution(cands[0], cands[:8])
+        return done([r[4] for r in rows if r[0] >= best - 0.12])
 
     def source_for(self, p: Programme, label: str = "") -> SourceRef:
         return SourceRef(doc_id=p.url, title=f"{p.name}{' — ' + label if label else ''}", url=p.url)
@@ -294,23 +370,53 @@ class Corpus:
     def stats(self) -> dict:
         return {"scraped_at": self.meta.get("scraped_at"), "programmes": len(self.programmes), "pages": len(self.pages),
                 "site": self.meta.get("source_site"), "external_sources": self.meta.get("external_sources", []),
+                "complete": self.meta.get("complete", True), "phase": self.meta.get("phase"),
                 "pages_by_kind": self.meta.get("pages_by_kind", {})}
 
 
 _corpus: Corpus | None = None
+_stamp: tuple | None = None
+_checked = 0.0
+RELOAD_CHECK_S = 20.0
 
 
 def data_dir() -> Path:
     return Path(os.getenv("CHRIST_DATA_DIR") or DEFAULT_DIR)
 
 
+def _files_stamp(d: Path) -> tuple:
+    out = []
+    for name in ("programmes.json", "pages.jsonl", "meta.json"):
+        try:
+            st = (d / name).stat()
+            out.append((st.st_mtime_ns, st.st_size))
+        except OSError:
+            out.append(None)
+    return tuple(out)
+
+
 def get_corpus() -> Corpus:
-    global _corpus
-    if _corpus is None:
-        _corpus = Corpus(data_dir())
+    """Lazily load; transparently reload when the scraper has written newer data (checked at most every 20 s)."""
+    import time
+    global _corpus, _stamp, _checked
+    d = data_dir()
+    now = time.monotonic()
+    if _corpus is None or (now - _checked) > RELOAD_CHECK_S:
+        _checked = now
+        stamp = _files_stamp(d)
+        if _corpus is None or stamp != _stamp:
+            try:
+                _corpus = Corpus(d)
+                _stamp = stamp
+            except DataNotReady:
+                if _corpus is None:
+                    raise
+            except Exception:  # a half-written file etc.: keep serving the previous corpus, retry next interval
+                if _corpus is None:
+                    raise
     return _corpus
 
 
 def reset_corpus() -> None:
-    global _corpus
-    _corpus = None
+    global _corpus, _stamp, _checked
+    _corpus, _stamp, _checked = None, None, 0.0

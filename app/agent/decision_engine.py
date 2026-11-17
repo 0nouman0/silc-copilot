@@ -206,10 +206,9 @@ def resolve_programme(history: list[dict], active: Application | None) -> Resolu
 
 def _collapse_campuses(r: Resolution, msg: str) -> Resolution:
     """Same programme listed on several campuses is NOT ambiguous: pick the campus named in the message, else the first."""
-    names = {p.name for p in r.candidates}
-    if len(names) == 1 and len(r.candidates) > 1:
+    if not r.ambiguous and len(r.candidates) > 1:
         q = set(re.findall(r"[a-z]+", msg.lower()))
-        pick = next((p for p in r.candidates if p.campus and {t for t in re.findall(r"[a-z]+", p.campus.lower()) if t not in ("bangalore", "campus")} & q), r.candidates[0])
+        pick = next((p for p in r.candidates if p.campus and {t for t in re.findall(r"[a-z]+", p.campus.lower()) if t not in ("bangalore", "campus")} & q), next((p for p in r.candidates if p.campus and "central" in p.campus.lower()), r.candidates[0]))
         return Resolution(pick, [pick] + [p for p in r.candidates if p is not pick])
     return r
 
@@ -217,21 +216,26 @@ def _collapse_campuses(r: Resolution, msg: str) -> Resolution:
 def need_programme(t: Turn, q: Req, intent: str, what: str) -> str | None:
     """Return a clarification reply if there's no single programme yet, else None."""
     res = q.res
-    if res and res.best and (not res.ambiguous or len({p.name for p in res.candidates}) == 1):
+    if res and res.best and not res.ambiguous:
         return None
     phrase = PHRASE.get(intent, "Tell me about")
-    opts_pool = list(res.candidates) if res and res.candidates else get_corpus().search_programmes(q.text, limit=6)
-    if opts_pool:
-        opts = opts_pool[:6]
-        t.followups = [f"{phrase} {_label(p) if len({x.name for x in opts}) < len(opts) else p.name}" for p in opts]
-        return f"Several CHRIST programmes match. Which one would you like {what} for?\n\n" + "\n".join(f"- {_label(p)}" for p in opts)
+    pool = list(res.candidates) if res and res.candidates else get_corpus().search_programmes(q.text, limit=60)
+    seen, opts = set(), []
+    for p in pool:  # the same programme on several campuses is one option
+        if p.name not in seen:
+            seen.add(p.name)
+            opts.append(p)
+    opts = opts[:6]
+    if opts:
+        t.followups = [f"{phrase} {p.name}" for p in opts]
+        return f"Several CHRIST programmes match. Which one would you like {what} for?\n\n" + "\n".join(f"- {p.name}" for p in opts)
     t.followups = [f"{phrase} MBA", f"{phrase} BBA", f"{phrase} B.Com", f"{phrase} B.Tech"]
     return (f"Which CHRIST programme would you like {what} for? Tell me the name (for example *MBA*, *BBA*, *B.Com*, *B.Tech Computer Science*), "
             "or browse them on the **Explore Programmes** page.")
 
 
 def other_campuses(q: Req) -> str:
-    if q.res and len(q.res.candidates) > 1 and len({p.name for p in q.res.candidates}) == 1:
+    if q.res and len(q.res.candidates) > 1 and not q.res.ambiguous:
         return "\n\n_Also listed at: " + ", ".join(p.campus or "" for p in q.res.candidates[1:]) + ". Fees and criteria are shown for " + (q.res.best.campus or "the first listing") + "._"
     return ""
 
@@ -339,7 +343,7 @@ def h_eligibility(t, q, check=False):
     out = t.run("get_eligibility_criteria", programme_id=p.id)
     if (e := _err(out)):
         return f"{e} See the [programme page]({p.url}). {CONTACT_HINT}"
-    body = f"**Eligibility — {p.name}** (as published on the CHRIST website)\n\n{out.data['eligibility']}"
+    body = f"**Eligibility — {p.name}**{' · ' + p.campus if p.campus else ''} (as published on the CHRIST website)\n\n{out.data['eligibility']}"
     t.followups = [x.format(n=p.name) for x in NEXT if "eligibility" not in x]
     if not check:
         return body + "\n\nShare your percentage and qualification if you'd like a **preliminary** comparison." + other_campuses(q)
@@ -352,22 +356,36 @@ def h_eligibility(t, q, check=False):
     return (f"**{res['label']}** — {p.name}\n\n{res['detail']}\n\n" + body + f"\n\n_{res['disclaimer']}_")
 
 
+STATUS_LABEL = {"open": "Open now", "upcoming": "Opens soon", "closed": "Closed", "unknown": "—"}
+
+
 def h_dates(t, q, only: str | None = None):
     res = q.res
-    if res and res.best and (not res.ambiguous or len({p.name for p in res.candidates}) == 1):
+    if res and res.best and not res.ambiguous:
         p = res.best
-        out = t.run("get_admission_dates", programme_id=p.id)
+        t.run("get_admission_dates", programme_id=p.id)
         t.followups = [x.format(n=p.name) for x in NEXT if "Application dates" not in x]
-        rows = [[_label(x), _fmt_date(x.application_open), _fmt_date(x.application_close)] for x in (res.candidates if len({x.name for x in res.candidates}) == 1 else [p])]
-        return (f"**Application dates — {p.name}**\n\n" + _table(["Campus", "Opens", "Closes"], rows) +
-                (f"\n\n[Apply online]({p.apply_url})" if p.apply_url else "") + "\n\n_Dates are from the CHRIST programme catalogue; confirm on the official page._")
+        listings = res.candidates
+        rows = [[_label(x), _fmt_date(x.application_open), _fmt_date(x.application_close), STATUS_LABEL[_status(x)]] for x in listings]
+        return (f"**Application dates — {p.name}**\n\n" + _table(["Campus", "Opens", "Closes", "Status"], rows) +
+                (f"\n\n[Apply online]({p.apply_url})" if p.apply_url and any(_status(x) != "closed" for x in listings) else "") +
+                "\n\n_Dates are from the CHRIST programme catalogue; confirm on the official page._")
     out = t.run("get_admission_dates")
     w = out.data["windows"]
     if not w:
         return f"No application dates were found in the collected catalogue. {CONTACT_HINT}"
-    rows = [[x["level"].title(), _na(x["campus"]), _fmt_date(x["open"]), _fmt_date(x["close"]), str(x["programmes"])] for x in w]
-    return ("**Application windows in the CHRIST catalogue**\n\n" + _table(["Level", "Campus", "Opens", "Closes", "Programmes"], rows[:25]) +
-            "\n\nName a programme (for example *MBA*) for its exact dates.")
+    current = sorted((x for x in w if x["status"] in ("open", "upcoming")), key=lambda x: (x["close"] or "9", x["level"]))
+    closed = len(w) - len(current)
+    if not current:
+        return f"Every application window in the collected CHRIST catalogue has closed ({closed} earlier windows). Please check the CHRIST website for the next cycle. {CONTACT_HINT}"
+    rows = [[x["level"].title(), _na(x["campus"]), _fmt_date(x["open"]), _fmt_date(x["close"]), STATUS_LABEL[x["status"]], str(x["programmes"])] for x in current]
+    return ("**Application windows in the CHRIST catalogue** (open or upcoming)\n\n" + _table(["Level", "Campus", "Opens", "Closes", "Status", "Programmes"], rows[:30]) +
+            (f"\n\n_{closed} earlier window(s) have closed and are not shown._" if closed else "") + "\n\nName a programme (for example *MBA*) for its exact dates.")
+
+
+def _status(p: Programme) -> str:
+    from ..tools.registry import window_status
+    return window_status(p.application_open, p.application_close)
 
 
 def h_fees(t, q, fee_only=False):
@@ -383,12 +401,12 @@ def h_fees(t, q, fee_only=False):
         lines = [ln for ln in fees.split("\n") if re.search(r"registration fee|application fee|caution deposit|non-refundable", ln, re.I)]
         if lines:
             return f"**Application / registration fee — {p.name}**\n\n" + "\n".join(f"- {ln}" for ln in lines) + f"\n\n[Source]({p.url})" + other_campuses(q)
-    return f"**Fees — {p.name}** (as published on the CHRIST website)\n\n{fees}" + other_campuses(q)
+    return f"**Fees — {p.name}**{' · ' + p.campus if p.campus else ''} (as published on the CHRIST website)\n\n{fees}" + other_campuses(q)
 
 
 def h_selection(t, q):
     res = q.res
-    if res and res.best and (not res.ambiguous or len({p.name for p in res.candidates}) == 1):
+    if res and res.best and not res.ambiguous:
         p = res.best
         out = t.run("get_programme_section", programme_id=p.id, topic="selection process entrance examination")
         if not _err(out) and "section" in out.data and re.search(r"select|entrance|exam|test", out.data["section"], re.I):

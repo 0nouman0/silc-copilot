@@ -1,4 +1,5 @@
 import json
+from datetime import date, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -8,9 +9,17 @@ from app.llm.base import LLMResponse, ToolCall
 from app.main import app
 
 BASE = "https://christuniversity.in"
+# application window relative to today so "open now / closed" logic never makes tests time-dependent
+OPEN = (date.today() - timedelta(days=30)).isoformat()
+CLOSE = (date.today() + timedelta(days=60)).isoformat()
 
 
-def _prog(pid, name, level, campus, *, elig=None, fees=None, tabs=(), open_="2026-10-15", close="2026-12-06", overview=None):
+def fmt(iso):
+    d = date.fromisoformat(iso)
+    return f"{d.day} {d.strftime('%B %Y')}"
+
+
+def _prog(pid, name, level, campus, *, elig=None, fees=None, tabs=(), open_=OPEN, close=CLOSE, overview=None):
     code = pid
     return {"id": pid, "code": code, "name": name, "level": level, "campus": campus, "application_open": open_, "application_close": close,
             "url": f"{BASE}/courses/{code}", "apply_url": "https://espro.christuniversity.in/Application/", "brochure_url": None,

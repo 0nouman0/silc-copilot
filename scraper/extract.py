@@ -77,10 +77,9 @@ def extract(html: str, base_url: str) -> Page:
         t.replace_with(NavigableString("\n" + _table_md(t) + "\n"))
     for lvl in range(1, 7):
         for h in soup.find_all(f"h{lvl}"):
-            h.insert_before(NavigableString("\n" + "#" * min(lvl + 1, 4) + " "))
-            h.append(NavigableString("\n"))
+            h.insert(0, NavigableString("#" * min(lvl + 1, 4) + " "))  # inside the element so smooth() joins it to the text
     for li in soup.find_all("li"):
-        li.insert_before(NavigableString("\n- "))
+        li.insert(0, NavigableString("- "))
     for br in soup.find_all("br"):
         br.replace_with(NavigableString("\n"))
     for t in soup.find_all(INLINE):

@@ -1,5 +1,6 @@
 import json
 
+from tests.conftest import CLOSE
 from app.tools import ToolContext, available_tools, execute, tool_defs
 
 ANON = ToolContext()
@@ -70,9 +71,9 @@ def test_preliminary_eligibility_tool_is_conservative():
 
 def test_dates_per_programme_and_windows():
     p = run("get_admission_dates", programme_id="334").data
-    assert p["application_close"] == "2026-12-06" and p["apply_url"].startswith("https://espro.")
+    assert p["application_close"] == CLOSE and p["status"] == "open" and p["apply_url"].startswith("https://espro.")
     w = run("get_admission_dates").data["windows"]
-    assert w and w[0]["close"] == "2026-12-06"
+    assert w and w[0]["close"] == CLOSE and w[0]["status"] == "open"
 
 
 def test_programme_section_by_topic():

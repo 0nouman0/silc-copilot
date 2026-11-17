@@ -54,7 +54,7 @@ def canon(url: str) -> str | None:
     host = p.netloc.lower().removeprefix("www.")
     if host in EXT_HOSTS:
         return urlunsplit(("https", host, re.sub(r"/+", "/", p.path).rstrip("/") or "/", "", ""))
-    if not host.endswith("christuniversity.in") or host.startswith(SKIP_HOSTS):
+    if not (host == "christuniversity.in" or host.endswith(".christuniversity.in")) or host.startswith(SKIP_HOSTS):
         return None
     path = re.sub(r"/+", "/", p.path) or "/"
     if len(path) > 1:
@@ -97,6 +97,9 @@ async def catalogue(f: Fetcher) -> dict[str, dict]:
                 continue
             row = nd.parent
             items = [re.sub(r"\s+", " ", d.get_text(" ")).strip() for d in row.select("div.acc-data-item")]
+            # column layout differs by level (PhD rows have extra leading cells), so find values by content, not position
+            campus = next((x for x in items if "campus" in x.lower()), None)
+            dates = [iso(x) for x in items if re.fullmatch(r"\d{1,2}-[A-Za-z]{3}-\d{4}", x)]
             m = re.search(r"openpopupAdm\((\d+)", str(row))
             code = a["href"].rstrip("/").rsplit("/", 1)[-1]
             cid = m.group(1) if m else unb64(code)
@@ -106,8 +109,8 @@ async def catalogue(f: Fetcher) -> dict[str, dict]:
             apply = next((x["href"] for x in row.select("a.apply-btn")), None)
             progs.setdefault(cid, {
                 "id": cid, "code": b64(cid), "name": re.sub(r"\s+", " ", a.get_text(" ")).strip(), "level": level,
-                "campus": items[0] if items else None, "application_open": iso(items[1]) if len(items) > 1 else None,
-                "application_close": iso(items[2]) if len(items) > 2 else None,
+                "campus": campus, "application_open": dates[0] if dates else None,
+                "application_close": dates[1] if len(dates) > 1 else None,
                 "url": f"{BASE}/courses/{b64(cid)}", "apply_url": apply, "brochure_url": brochure})
         log(f"catalogue {typ}: total so far {len(progs)}")
     return progs
@@ -115,8 +118,8 @@ async def catalogue(f: Fetcher) -> dict[str, dict]:
 
 # ------------------------------------------------------------------ phase 2: general crawl
 class Crawl:
-    def __init__(self, f: Fetcher, max_pages: int):
-        self.f, self.max_pages = f, max_pages
+    def __init__(self, f: Fetcher, max_pages: int, on_progress=None):
+        self.f, self.max_pages, self.on_progress = f, max_pages, on_progress
         self.q: asyncio.Queue = asyncio.Queue()
         self.seen: set[str] = set()
         self.pages: list[dict] = []
@@ -147,7 +150,7 @@ class Crawl:
             u, depth = await self.q.get()
             try:
                 r = await self.f.get(u)
-                if r and r.status == 200:
+                if r and r.status == 200 and canon(r.final_url):  # a redirect off-scope (e.g. a Google sign-in wall) is discarded
                     ct = r.content_type.lower()
                     if "pdf" in ct:
                         self.pdfs.setdefault(r.final_url, u)
@@ -165,6 +168,8 @@ class Crawl:
                             if host in EXT_HOSTS:
                                 rec["source_label"] = EXT_HOSTS[host]
                             self.pages.append(rec)
+                if self.on_progress and len(self.pages) % 500 == 0 and self.pages:
+                    self.on_progress(len(self.pages))
                 if len(self.pages) % 100 == 0 and self.pages:
                     log(f"crawl: {len(self.pages)} pages, queue {self.q.qsize()}, pdfs {len(self.pdfs)}, courses {len(self.course_codes)}, req {self.f.requests}")
             except Exception as e:  # noqa: BLE001
@@ -182,21 +187,36 @@ class Crawl:
 
 
 # ------------------------------------------------------------------ phase 3: programme detail pages + tabs
-async def course_detail(f: Fetcher, p: dict) -> dict:
+async def course_core(f: Fetcher, p: dict) -> dict:
+    """Fast, high-value part: programme page (overview/quick facts), Eligibility and Fees popups."""
     cid = p["id"]
-    page = await f.get(p["url"])
+
+    async def popup(kind: str):
+        r = await f.post(f"{BASE}/php/ajax/ajax_admissionPopup.php", {"course_id": cid, "type": kind})
+        return extract(r.text, BASE).text if r and r.status == 200 and r.text.strip() else None
+
+    page, elig, fees = await asyncio.gather(f.get(p["url"]), popup("Eligibility"), popup("Fees"))
+    p["eligibility"], p["fees"] = elig, fees
     if page and page.status == 200:
         pg = extract(page.text, page.final_url)
         p["title"], p["overview"] = pg.title, pg.text
-        p.setdefault("pdfs", []).extend(pg.pdfs)
+        p["pdfs"] = list(pg.pdfs)
         if not p.get("name") or p["name"].startswith("Programme "):
             h = re.search(r"<h1[^>]*>(.*?)</h1>", page.text, re.S)
             if h:
                 p["name"] = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", h.group(1))).strip() or p["name"]
-        common = list(dict.fromkeys(re.findall(r"getcontnt\((\d+)\)", page.text)))
-        related = list(dict.fromkeys(re.findall(r"getrcontnt\((\d+)\)", page.text)))
+        p["_tab_ids"] = {"common": list(dict.fromkeys(re.findall(r"getcontnt\((\d+)\)", page.text))),
+                         "related": list(dict.fromkeys(re.findall(r"getrcontnt\((\d+)\)", page.text)))}
     else:
-        p["overview"], common, related = None, [], []
+        p.setdefault("overview", None)
+        p["_tab_ids"] = {"common": [], "related": []}
+    p.setdefault("tabs", [])
+    return p
+
+
+async def course_tabs(f: Fetcher, p: dict) -> dict:
+    """Slow part: the ~25 lazy-loaded sections per programme page."""
+    cid, ids = p["id"], p.get("_tab_ids") or {"common": [], "related": []}
 
     async def tab(kind: str, lid: str):
         ep = "get_common_content" if kind == "common" else "get_related_content"
@@ -207,14 +227,9 @@ async def course_detail(f: Fetcher, p: dict) -> dict:
         t = extract(r.text, BASE).text
         return {"id": lid, "kind": kind, "text": t} if t else None
 
-    async def popup(kind: str):
-        r = await f.post(f"{BASE}/php/ajax/ajax_admissionPopup.php", {"course_id": cid, "type": kind})
-        return extract(r.text, BASE).text if r and r.status == 200 and r.text.strip() else None
-
-    elig, fees, *tabs = await asyncio.gather(popup("Eligibility"), popup("Fees"),
-                                              *[tab("common", i) for i in common], *[tab("related", i) for i in related])
-    p["eligibility"], p["fees"] = elig, fees
+    tabs = await asyncio.gather(*[tab("common", i) for i in ids["common"]], *[tab("related", i) for i in ids["related"]])
     p["tabs"] = [t for t in tabs if t]
+    p["_tabs_done"] = True
     return p
 
 
@@ -276,7 +291,7 @@ async def fetch_pdfs(f: Fetcher, urls: dict[str, str], cap: int) -> list[dict]:
     async def one(u: str, ref: str):
         async with sem:
             r = await f.get(u, max_bytes=25_000_000)
-        if not r or r.status != 200 or b"%PDF" not in r.body[:1024]:
+        if not r or r.status != 200 or not canon(r.final_url) or b"%PDF" not in r.body[:1024]:
             return
         txt = await asyncio.to_thread(pdf_text, r.body)
         if len(txt) > 200:
@@ -344,58 +359,10 @@ def drop_boilerplate(pages: list[dict], threshold: float = 0.12) -> None:
     log(f"boilerplate: removed {len(common)} repeated lines (appearing on >= {limit} pages)")
 
 
-async def main(max_pages: int, limit_programmes: int | None = None):
-    ROOT.mkdir(parents=True, exist_ok=True)
-    f = Fetcher(ROOT / "cache", concurrency=5)
-    t0 = time.time()
-    try:
-        log("phase 1: programme catalogue")
-        progs = await catalogue(f)
-
-        log("phase 2: crawling site")
-        crawl = Crawl(f, max_pages)
-        await crawl.run([BASE + "/", BASE + "/admission-home", BASE + "/academics", BASE + "/our-programmes/All/1", BASE + "/International-Students"]
-                        + [f"https://{h}/" for h in EXT_HOSTS])
-        known_codes = {p["code"].rstrip("=") for p in progs.values()}
-        for code in crawl.course_codes - known_codes:
-            cid = unb64(code)
-            if cid and cid.isdigit():
-                progs.setdefault(cid, {"id": cid, "code": code, "name": f"Programme {cid}", "level": "other", "campus": None,
-                                       "application_open": None, "application_close": None, "url": f"{BASE}/courses/{code}",
-                                       "apply_url": None, "brochure_url": None})
-        if limit_programmes:
-            progs = dict(list(progs.items())[:limit_programmes])
-        log(f"crawl done: {len(crawl.pages)} pages, {len(crawl.pdfs)} pdfs, {len(progs)} programmes")
-
-        log("phase 3: programme details (page + eligibility + fees + tabs)")
-        done = 0
-        sem = asyncio.Semaphore(4)
-
-        async def one(p):
-            nonlocal done
-            async with sem:
-                await course_detail(f, p)
-            done += 1
-            if done % 25 == 0:
-                log(f"  programmes {done}/{len(progs)}  req {f.requests}")
-
-        await asyncio.gather(*[one(p) for p in progs.values()])
-
-        log("phase 4: PDFs (brochures, fee structures, policies)")
-        pdf_urls = dict(crawl.pdfs)
-        for p in progs.values():
-            for u in ([p["brochure_url"]] if p.get("brochure_url") else []) + p.get("pdfs", []):
-                if u and canon(u):
-                    pdf_urls.setdefault(u, p["url"])
-        pdf_pages = await fetch_pdfs(f, pdf_urls, cap=3000)
-        log(f"  extracted text from {len(pdf_pages)} of {len(pdf_urls)} pdfs")
-
-        log("phase 5: external open sources")
-        ext = await external(f)
-    finally:
-        await f.close()
-
-    pages = crawl.pages + pdf_pages + ext
+def build_outputs(progs: dict, crawl_pages: list, pdf_pages: list, ext: list):
+    """Pure function: raw collected data -> final programmes list + cleaned pages (works on partial data too)."""
+    import copy
+    pages = copy.deepcopy(crawl_pages) + copy.deepcopy(pdf_pages) + copy.deepcopy(ext)
     drop_boilerplate(pages)
     seen_hash, final = set(), []
     for p in pages:
@@ -406,26 +373,110 @@ async def main(max_pages: int, limit_programmes: int | None = None):
         p["category"] = categorize(p["url"], p["title"], p["text"] if p["kind"] == "pdf" else "")
         p["fetched_at"] = date.today().isoformat()
         final.append(p)
-
+    plist = []
     for p in progs.values():
-        p["quick_facts"] = quick_facts(p.get("overview") or "")
-        p["tabs"] = tidy_tabs(p["name"], p.get("tabs", []))
-        p.pop("pdfs", None)
-        p["category"] = "programmes"
-    plist = sorted(progs.values(), key=lambda p: (p["level"], p["name"]))
-    (ROOT / "programmes.json").write_text(json.dumps(plist, ensure_ascii=False, indent=1), "utf-8")
-    with (ROOT / "pages.jsonl").open("w", encoding="utf-8") as fh:
-        for p in final:
-            fh.write(json.dumps(p, ensure_ascii=False) + "\n")
-    meta = {"scraped_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "source_site": BASE,
+        q = {k: v for k, v in p.items() if not k.startswith("_") and k != "pdfs"}
+        q["quick_facts"] = quick_facts(p.get("overview") or "")
+        q["tabs"] = tidy_tabs(p["name"], p.get("tabs", []))
+        q["category"] = "programmes"
+        plist.append(q)
+    plist.sort(key=lambda x: (x["level"], x["name"]))
+    return plist, final
+
+
+def save(progs, crawl_pages, pdf_pages, ext, *, phase: str, complete: bool, started: float, requests: int):
+    plist, final = build_outputs(progs, crawl_pages, pdf_pages, ext)
+    ROOT.mkdir(parents=True, exist_ok=True)
+
+    def atomic(path: Path, text: str):  # the app may read while we write
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(text, "utf-8")
+        tmp.replace(path)
+
+    atomic(ROOT / "programmes.json", json.dumps(plist, ensure_ascii=False, indent=1))
+    atomic(ROOT / "pages.jsonl", "".join(json.dumps(p, ensure_ascii=False) + "\n" for p in final))
+    meta = {"scraped_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "source_site": BASE, "complete": complete, "phase": phase,
             "programmes": len(plist), "programmes_with_eligibility": sum(1 for p in plist if p.get("eligibility")),
             "programmes_with_fees": sum(1 for p in plist if p.get("fees")),
+            "programmes_with_tabs": sum(1 for p in plist if p.get("tabs")),
             "pages": len(final), "pages_by_kind": dict(collections.Counter(p["kind"] for p in final)),
             "pages_by_category": dict(collections.Counter(p["category"] for p in final)),
             "hosts": dict(collections.Counter(p["host"] for p in final)),
-            "external_sources": [p["source_label"] for p in ext], "requests": f.requests, "seconds": round(time.time() - t0)}
-    (ROOT / "meta.json").write_text(json.dumps(meta, indent=1), "utf-8")
-    log("DONE", json.dumps(meta))
+            "external_sources": sorted({p.get("source_label") for p in final if p.get("source_label")}),
+            "requests": requests, "seconds": round(time.time() - started)}
+    atomic(ROOT / "meta.json", json.dumps(meta, indent=1))
+    log(f"SAVED [{phase}{' COMPLETE' if complete else ''}] programmes={meta['programmes']} (elig {meta['programmes_with_eligibility']}, fees {meta['programmes_with_fees']}, tabs {meta['programmes_with_tabs']}) pages={meta['pages']}")
+    return meta
+
+
+async def main(max_pages: int, limit_programmes: int | None = None):
+    ROOT.mkdir(parents=True, exist_ok=True)
+    f = Fetcher(ROOT / "cache", concurrency=5)
+    t0 = time.time()
+    pdf_pages: list = []
+    ext: list = []
+    try:
+        crawl = Crawl(f, max_pages)
+        ck = lambda phase, complete=False: save(progs, crawl.pages, pdf_pages, ext, phase=phase, complete=complete, started=t0, requests=f.requests)
+
+        log("phase 1: programme catalogue")
+        progs = await catalogue(f)
+        if limit_programmes:
+            progs = dict(list(progs.items())[:limit_programmes])
+
+        async def run_stage(fn, items, label, every=50):
+            sem, done = asyncio.Semaphore(4), 0
+
+            async def one(p):
+                nonlocal done
+                async with sem:
+                    await fn(f, p)
+                done += 1
+                if done % every == 0:
+                    log(f"  {label} {done}/{len(items)}  req {f.requests}")
+
+            await asyncio.gather(*[one(p) for p in items])
+
+        log("phase 2: eligibility + fees + overview for every programme (fast, most valuable)")
+        await run_stage(course_core, list(progs.values()), "core")
+        ck("programmes")
+
+        log("phase 3: crawling the rest of the site (checkpoints every 500 pages)")
+        crawl.on_progress = lambda n: ck(f"crawl-{n}")
+        await crawl.run([BASE + "/", BASE + "/admission-home", BASE + "/academics", BASE + "/our-programmes/All/1", BASE + "/International-Students"]
+                        + [f"https://{h}/" for h in EXT_HOSTS])
+        known = {p["code"].rstrip("=") for p in progs.values()}
+        new = []
+        for code in crawl.course_codes - known:
+            cid = unb64(code)
+            if cid and cid.isdigit() and cid not in progs:
+                progs[cid] = {"id": cid, "code": code, "name": f"Programme {cid}", "level": "other", "campus": None, "application_open": None,
+                              "application_close": None, "url": f"{BASE}/courses/{code}", "apply_url": None, "brochure_url": None}
+                new.append(progs[cid])
+        if new:
+            await run_stage(course_core, new, "core(new)")
+        log(f"crawl done: {len(crawl.pages)} pages, {len(crawl.pdfs)} pdfs, {len(progs)} programmes")
+        ck("crawl-done")
+
+        log("phase 4: programme sections/tabs (slow)")
+        for i in range(0, len(progs), 60):  # checkpoint after every batch
+            await run_stage(course_tabs, list(progs.values())[i:i + 60], "tabs", every=30)
+            ck(f"tabs-{min(i + 60, len(progs))}")
+
+        log("phase 5: PDFs (brochures, fee structures, policies)")
+        pdf_urls = dict(crawl.pdfs)
+        for p in progs.values():
+            for u in ([p["brochure_url"]] if p.get("brochure_url") else []) + p.get("pdfs", []):
+                if u and canon(u):
+                    pdf_urls.setdefault(u, p["url"])
+        pdf_pages.extend(await fetch_pdfs(f, pdf_urls, cap=3000))
+        log(f"  extracted text from {len(pdf_pages)} of {len(pdf_urls)} pdfs")
+
+        log("phase 6: external open sources")
+        ext.extend(await external(f))
+        ck("final", complete=True)
+    finally:
+        await f.close()
 
 
 if __name__ == "__main__":
