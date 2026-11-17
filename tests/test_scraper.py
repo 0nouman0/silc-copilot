@@ -293,3 +293,24 @@ def test_data_dir_prefers_live_scrape_then_falls_back_to_deploy_bundle(monkeypat
     assert store.data_dir() == live             # local dev: fresher live scrape wins
     monkeypatch.setenv("CHRIST_DATA_DIR", str(tmp_path / "explicit"))
     assert store.data_dir() == tmp_path / "explicit"
+
+
+# ------------------------------------------------------------------ regression: raw Unicode line separators inside PDF text
+def test_jsonl_with_unicode_line_separators_loads_and_bundles(tmp_path):
+    """str.splitlines() splits on U+2028/U+2029/U+0085/form-feed, which json.dumps(ensure_ascii=False) leaves raw inside strings.
+    The finished scrape crashed the app loader and the bundler until both were switched to split('\n')."""
+    from scraper import bundle as B
+    from tests.conftest import PROGRAMMES
+    d = tmp_path / "sep"
+    d.mkdir()
+    page = {"url": "https://christuniversity.in/x.pdf", "host": "christuniversity.in", "title": "x.pdf", "kind": "pdf", "category": "admissions",
+            "text": "Admission brochure fees apply next\u0085line\x0cpage two " * 30}
+    line = json.dumps(page, ensure_ascii=False)
+    assert " " in line and len(line.splitlines()) > 1          # the trap: one record, several 'lines'
+    (d / "programmes.json").write_text(json.dumps(PROGRAMMES), "utf-8")
+    (d / "pages.jsonl").write_text(line + "\n", "utf-8")
+    c = Corpus(d)
+    assert len(c.pages) == 1 and " " in c.pages[0]["text"]
+    out = tmp_path / "out"
+    B.build(src=d, out=out, pdf_chars=500, max_pdf_mb=1)
+    assert len(Corpus(out).pages) == 1

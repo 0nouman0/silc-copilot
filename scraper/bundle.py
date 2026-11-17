@@ -34,7 +34,7 @@ def build(src: Path = SCRAPE_ROOT, out: Path = OUT, pdf_chars: int = 30_000, max
     if not prog_file.exists():
         raise SystemExit(f"No scrape output in {src}. Run: python scrape.py")
     progs = json.loads(prog_file.read_text("utf-8"))
-    pages = [json.loads(ln) for ln in pages_file.read_text("utf-8").splitlines() if ln.strip()] if pages_file.exists() else []
+    pages = [json.loads(ln) for ln in pages_file.read_text("utf-8").split("\n") if ln.strip()] if pages_file.exists() else []  # not splitlines(): see store.py
 
     kept, pdfs = [], []
     for p in pages:

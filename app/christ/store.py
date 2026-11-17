@@ -196,7 +196,8 @@ class Corpus:
             p.eligibility, p.fees = clean_popup(p.eligibility), clean_popup(p.fees)
         self.by_id = {p.id: p for p in self.programmes}
         self.meta = json.loads(mj.read_text("utf-8")) if mj.exists() else {}
-        self.pages = [json.loads(ln) for ln in read_data_file(pg).splitlines() if ln.strip()] if pg else []
+        # JSONL: split ONLY on "\n". str.splitlines() also splits on U+2028/U+0085/etc., which appear raw inside PDF text and cut records in half
+        self.pages = [json.loads(ln) for ln in read_data_file(pg).split("\n") if ln.strip()] if pg else []
         self.chunks: list[Chunk] = []
         self._build_chunks()
         self._build_index()
