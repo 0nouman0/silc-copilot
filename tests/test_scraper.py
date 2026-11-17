@@ -173,3 +173,57 @@ def test_programme_list_search_requires_everything_typed(tmp_path):
     assert c.search_programmes("xyzzy") == [] and c.search_programmes("fees") == []
     assert [p.id for p in c.search_programmes("ma english")] == ["11"]
     assert len(c.search_programmes(None)) == 13 and len(c.search_programmes("law")) == 3
+
+
+# ------------------------------------------------------------------ CLI: status + single-instance guard
+def _patch_root(monkeypatch, tmp_path):
+    d = tmp_path / "scrape-root"  # not tmp_path itself: the autouse corpus fixture already writes files there
+    d.mkdir()
+    monkeypatch.setattr(S, "ROOT", d)
+    monkeypatch.setattr(S, "LOCK", d / ".scrape.lock")
+    return d
+
+
+def test_status_when_nothing_has_run(monkeypatch, tmp_path, capsys):
+    tmp_path = _patch_root(monkeypatch, tmp_path)
+    assert S.cli(["status"]) == 0
+    out = capsys.readouterr().out
+    assert "not running" in out and "nothing saved yet" in out
+
+
+def test_second_scrape_is_refused_while_one_is_alive(monkeypatch, tmp_path, capsys):
+    tmp_path = _patch_root(monkeypatch, tmp_path)
+    (tmp_path / ".scrape.lock").write_text("4242")
+
+    async def boom(*a, **k):
+        raise AssertionError("a second crawl must not start")
+
+    monkeypatch.setattr(S, "main", boom)
+    assert S.cli([]) == 1
+    assert "already running" in capsys.readouterr().out and "4242" in capsys.readouterr().out + "4242"
+
+
+def test_stale_lock_does_not_block_and_is_cleaned_up(monkeypatch, tmp_path):
+    import os
+    import time
+    tmp_path = _patch_root(monkeypatch, tmp_path)
+    lock = tmp_path / ".scrape.lock"
+    lock.write_text("1")
+    old = time.time() - 3600
+    os.utime(lock, (old, old))
+    ran = []
+
+    async def fake_main(max_pages, limit):
+        ran.append((max_pages, limit))
+
+    monkeypatch.setattr(S, "main", fake_main)
+    assert S.cli(["--max-pages", "50", "--limit-programmes", "3"]) == 0 and ran == [(50, 3)]
+
+
+def test_status_reports_partial_checkpoint(monkeypatch, tmp_path, capsys):
+    tmp_path = _patch_root(monkeypatch, tmp_path)
+    (tmp_path / "meta.json").write_text(json.dumps({"complete": False, "phase": "crawl-1500", "programmes": 348, "programmes_with_eligibility": 323,
+                                                    "programmes_with_fees": 348, "programmes_with_tabs": 0, "pages": 900, "scraped_at": "2026-11-17T10:00:00+00:00"}))
+    S.cli(["status"])
+    out = capsys.readouterr().out
+    assert "partial" in out and "crawl-1500" in out and "programmes=348" in out and "pages=900" in out

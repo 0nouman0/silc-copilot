@@ -27,9 +27,14 @@ sites that forbid or block crawlers (e.g. NIRF returns 403; Wikipedia requires c
 The scraped data is **not committed** (`data/` is gitignored): it is CHRIST's content, so each deployment collects its own copy.
 
 ```bash
-python -m scraper.run                       # full crawl (resumable; ~1–2 h first time, minutes afterwards thanks to the cache)
-python -m scraper.run --max-pages 300 --limit-programmes 10   # quick smoke run
+python scrape.py                       # full crawl (resumable; ~1-2 h first time, minutes afterwards thanks to the cache)
+python scrape.py status                # is it running? what has been saved so far?
+python scrape.py --max-pages 300 --limit-programmes 10   # quick trial
 ```
+`scrape.py` works from any directory and with any `python` (it switches to the project's `.venv` itself); `python -m scraper` also works
+from the project root. A second scrape is refused while one is running, so two crawlers never hit the site at once. The scraper saves
+**checkpoints** (programmes first, then pages every 500, then sections and PDFs) and the app reloads them automatically, so the chat
+is usable minutes after starting.
 Re-run it periodically so fees and dates stay current. The UI banner shows when the data was collected.
 
 ## Run the app
@@ -39,10 +44,10 @@ python -m venv .venv
 .venv\Scripts\activate            # macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
 copy .env.example .env            # then edit .env (see below)
-python -m scraper.run             # collect CHRIST data (once, then periodically)
+python scrape.py                  # collect CHRIST data (once, then periodically)
 uvicorn app.main:app --reload --port 8000
 ```
-Open http://localhost:8000 (API docs at `/api/docs`). Without `data/christ/` the app still starts and tells you to run the scraper.
+Open http://localhost:8000 (API docs at `/api/docs`). Without `data/christ/` the app still starts and tells you to run `python scrape.py`.
 
 ### OpenRouter
 

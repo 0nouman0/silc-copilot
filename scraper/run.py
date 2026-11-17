@@ -33,6 +33,8 @@ from .http import Fetcher
 for _n in ("pypdf", "fontTools"):
     logging.getLogger(_n).setLevel(logging.CRITICAL)
 ROOT = Path(__file__).resolve().parent.parent / "data" / "christ"
+LOCK = ROOT / ".scrape.lock"
+STALE_AFTER_S = 600  # no heartbeat for 10 minutes => the previous run is dead
 BASE = "https://christuniversity.in"
 EXT_HOSTS = {"christbangalore.blogspot.com": "CHRIST blog (Blogspot)", "christuba.wordpress.com": "CHRIST blog (WordPress)"}
 EXT_CAP = 40
@@ -45,6 +47,10 @@ LEVELS = {"UGP": "undergraduate", "PGP": "postgraduate", "PHD": "doctoral"}
 
 def log(*a):
     print(time.strftime("%H:%M:%S"), *a, flush=True)
+    try:  # heartbeat: lets `status` and the single-instance guard know a run is alive
+        LOCK.touch()
+    except OSError:
+        pass
 
 
 def canon(url: str) -> str | None:
@@ -479,9 +485,63 @@ async def main(max_pages: int, limit_programmes: int | None = None):
         await f.close()
 
 
-if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
+def _running() -> int | None:
+    """PID of a live scrape (heartbeat fresh), else None. Also honours runs started before locks existed (fresh scrape.log)."""
+    for f in (LOCK, ROOT / "scrape.log"):
+        try:
+            if time.time() - f.stat().st_mtime < STALE_AFTER_S:
+                try:
+                    return int(LOCK.read_text().strip() or 0) or -1
+                except (OSError, ValueError):
+                    return -1
+        except OSError:
+            continue
+    return None
+
+
+def status() -> int:
+    pid = _running()
+    print("scraper:", f"RUNNING (pid {pid})" if pid and pid > 0 else "RUNNING" if pid else "not running")
+    meta = ROOT / "meta.json"
+    if meta.exists():
+        m = json.loads(meta.read_text("utf-8"))
+        print(f"data   : {'COMPLETE' if m.get('complete') else 'partial'} · phase={m.get('phase')} · programmes={m.get('programmes')} "
+              f"(eligibility {m.get('programmes_with_eligibility')}, fees {m.get('programmes_with_fees')}, sections {m.get('programmes_with_tabs')}) · pages={m.get('pages')} · saved {m.get('scraped_at')}")
+    else:
+        print("data   : nothing saved yet (the first checkpoint is written within a minute of starting)")
+    cache = ROOT / "cache"
+    print("cache  :", f"{sum(1 for _ in cache.glob('*.gz'))} responses" if cache.exists() else "empty")
+    lg = ROOT / "scrape.log"
+    if lg.exists():
+        print("--- last log lines ---")
+        print("\n".join(lg.read_text("utf-8", errors="replace").splitlines()[-6:]))
+    return 0
+
+
+def cli(argv: list[str]) -> int:
+    if argv and argv[0] == "status":
+        return status()
+    ap = argparse.ArgumentParser(prog="scraper", description="Scrape CHRIST public website data into data/christ/")
+    ap.add_argument("command", nargs="?", choices=["run", "status"], default="run")
     ap.add_argument("--max-pages", type=int, default=6000)
     ap.add_argument("--limit-programmes", type=int, default=None)
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
+    if a.command == "status":
+        return status()
+    ROOT.mkdir(parents=True, exist_ok=True)
+    other = _running()
+    if other:
+        print(f"A scrape is already running{f' (pid {other})' if other > 0 else ''}. Two crawlers would double the load on the CHRIST site.\n"
+              f"Check it with:  python scrape.py status      (or delete {LOCK} if you are sure it is dead)")
+        return 1
+    import atexit
+    import os
+    LOCK.write_text(str(os.getpid()))
+    atexit.register(lambda: LOCK.unlink(missing_ok=True))
     asyncio.run(main(a.max_pages, a.limit_programmes))
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+    raise SystemExit(cli(sys.argv[1:]))
