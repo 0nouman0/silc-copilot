@@ -20,6 +20,7 @@ from ..christ.eligibility_hint import hint
 from ..christ.models import Programme, SourceRef
 from ..christ.store import DataNotReady, get_corpus
 from ..llm.base import ToolDef
+from ..sources import SourceUnavailable, get_source
 
 MAX_TEXT = 3500
 CATALOGUE_URL = "https://christuniversity.in/our-programmes/All/1"
@@ -44,14 +45,15 @@ class Tool:
     args: type[BaseModel]
     fn: Callable[[Any, ToolContext], ToolOutput]
     requires_auth: bool = False
+    needs_source: bool = False  # only offered when a structured catalogue source (DB/API) is configured
 
 
 REGISTRY: dict[str, Tool] = {}
 
 
-def tool(name: str, description: str, args: type[BaseModel], requires_auth: bool = False):
+def tool(name: str, description: str, args: type[BaseModel], requires_auth: bool = False, needs_source: bool = False):
     def deco(fn):
-        REGISTRY[name] = Tool(name, description, args, fn, requires_auth)
+        REGISTRY[name] = Tool(name, description, args, fn, requires_auth, needs_source)
         return fn
     return deco
 
@@ -69,7 +71,8 @@ def _simplify(schema: Any) -> Any:
 
 
 def available_tools(ctx: ToolContext) -> list[Tool]:
-    return [t for t in REGISTRY.values() if not t.requires_auth or ctx.user_id]
+    has_source = get_source() is not None
+    return [t for t in REGISTRY.values() if (not t.requires_auth or ctx.user_id) and (not t.needs_source or has_source)]
 
 
 def tool_defs(ctx: ToolContext) -> list[ToolDef]:
@@ -79,7 +82,7 @@ def tool_defs(ctx: ToolContext) -> list[ToolDef]:
 def execute(name: str, raw_args: str, ctx: ToolContext) -> ToolOutput:
     """Validate + run one tool. Never raises: failures become structured errors the caller must relay honestly."""
     t = REGISTRY.get(name)
-    if t is None or (t.requires_auth and not ctx.user_id):
+    if t is None or (t.requires_auth and not ctx.user_id) or (t.needs_source and get_source() is None):
         return ToolOutput({"error": "tool_unavailable", "message": "This capability is not available."})
     try:
         parsed = t.args.model_validate(json.loads(raw_args or "{}"))
@@ -89,6 +92,8 @@ def execute(name: str, raw_args: str, ctx: ToolContext) -> ToolOutput:
         return t.fn(parsed, ctx)
     except DataNotReady as e:
         return ToolOutput({"error": "data_not_ready", "message": str(e)})
+    except SourceUnavailable:
+        return ToolOutput({"error": "catalogue_unavailable", "message": "The programme database cannot be reached right now. Say so; do not guess."})
     except ApplicantApiUnavailable:
         return ToolOutput({"error": "live_status_unavailable", "message": "Live application information cannot be checked right now."})
 
@@ -315,3 +320,102 @@ def get_application_status(a: AppArgs, ctx):
         return ToolOutput({"found": False, "message": "No application with that reference is associated with your account."})
     return ToolOutput({"demo": api.is_demo, "application": app.model_dump(mode="json"),
                        "note": "status/offer_status are authoritative. offer_status null means no offer information was returned."})
+
+
+# ------------------------------------------------------------------------------ structured-catalogue tools (DB/API)
+# Predefined lookups behind `CatalogueSource`. The model supplies typed parameters only; it never sees SQL or an endpoint.
+# `course_id` values come from db_search_programmes and are different from the website-corpus programme ids.
+DB_NOTE = ("Source: CHRIST website database snapshot. Application dates stored there can be out of date; for current dates prefer "
+           "get_admission_dates or tell the applicant to confirm on the official page.")
+
+
+def _db() -> Any:
+    src = get_source()
+    if src is None:
+        raise SourceUnavailable("no catalogue source configured")
+    return src
+
+
+class DbSearchArgs(BaseModel):
+    query: str = ""
+    level: Literal["undergraduate", "postgraduate", "doctoral", "international"] | None = None
+    campus: str | None = None
+
+
+@tool("db_search_programmes", "Find programmes in the CHRIST database by name words, level or campus. Returns course_id (use it with the other db_* tools), name, level, campus.",
+      DbSearchArgs, needs_source=True)
+def db_search_programmes(a: DbSearchArgs, ctx):
+    rows = _db().search_courses(a.query, a.level, a.campus, 15)
+    slim = [{k: r[k] for k in ("course_id", "name", "level", "campus", "department", "duration_years")} for r in rows]
+    return ToolOutput({"count": len(slim), "programmes": slim} if slim else {"found": False, "message": "No programme matched. Try fewer or different words."})
+
+
+class CourseIdArgs(BaseModel):
+    course_id: int
+
+
+@tool("db_get_programme_details", "Exact programme record by course_id: level, campus, department, duration, term type, intake, summary, overview, selection process.",
+      CourseIdArgs, needs_source=True)
+def db_get_programme_details(a: CourseIdArgs, ctx):
+    c = _db().get_course(a.course_id)
+    if not c:
+        return _nf(f"Programme {a.course_id}")
+    for k in ("overview", "selection_process"):
+        c[k] = _cut(c.get(k), 2000)
+    return ToolOutput({"programme": c, "note": DB_NOTE})
+
+
+class DbSectionArgs(BaseModel):
+    course_id: int
+    section: Literal["eligibility", "fees", "selection", "outcomes", "structure", "entrance_test"]
+
+
+@tool("db_get_programme_section", "Published text of one section for a programme: eligibility, fees, selection, outcomes, structure or entrance_test. Quote it exactly; never fill gaps.",
+      DbSectionArgs, needs_source=True)
+def db_get_programme_section(a: DbSectionArgs, ctx):
+    rows = _db().get_sections(a.course_id, a.section)
+    if not rows:
+        return _nf(f"The {a.section} section for programme {a.course_id}")
+    return ToolOutput({"sections": [{**r, "text": _cut(r["text"], 6000)} for r in rows[:3]], "note": DB_NOTE})
+
+
+@tool("db_get_programme_highlights", "Why choose the programme, what you will learn, career paths and modules for a course_id.", CourseIdArgs, needs_source=True)
+def db_get_programme_highlights(a: CourseIdArgs, ctx):
+    rows = _db().get_highlights(a.course_id)
+    if not rows:
+        return _nf(f"Highlights for programme {a.course_id}")
+    return ToolOutput({"highlights": [{**r, "text": _cut(r["text"], 600)} for r in rows[:20]]})
+
+
+class CurriculumArgs(BaseModel):
+    course_id: int
+    year: str | None = None
+
+
+@tool("db_get_curriculum", "Term-by-term subjects and credits for a programme (optionally one year, e.g. 'Year 1'), plus its phase roadmap.", CurriculumArgs, needs_source=True)
+def db_get_curriculum(a: CurriculumArgs, ctx):
+    src = _db()
+    cur = src.get_curriculum(a.course_id, a.year)
+    if not cur:
+        return _nf(f"Curriculum for programme {a.course_id}")
+    return ToolOutput({"terms": cur, "roadmap": src.get_roadmap(a.course_id)[:8]})
+
+
+class DeaneryArgs(BaseModel):
+    group: str | None = None
+
+
+@tool("db_get_admission_process", "General admission process (how to apply, eligibility, selection, dates) for a programme group such as 'ug mgmt', 'pg science', 'phd arts'. Omit group to list the groups.",
+      DeaneryArgs, needs_source=True)
+def db_get_admission_process(a: DeaneryArgs, ctx):
+    rows = _db().get_admission_process(a.group)
+    if not rows:
+        return _nf("Admission process for that group")
+    if not a.group:
+        return ToolOutput({"groups": [r["group"] for r in rows]})
+    return ToolOutput({"processes": [{**r, **{k: _cut(v, 1800) for k, v in r.items() if k != "group"}} for r in rows[:2]]})
+
+
+@tool("db_list_campuses", "List the active CHRIST campuses.", NoArgs, needs_source=True)
+def db_list_campuses(a: NoArgs, ctx):
+    return ToolOutput({"campuses": _db().list_campuses()})

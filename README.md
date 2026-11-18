@@ -140,3 +140,7 @@ The "my applications" demo uses a **mock** applicant API; no live CHRIST system 
 - **Components:** Bootstrap 5.3 (navbar, cards, pagination, accordion, modal, forms, badges) with the CHRIST blue/gold set through Bootstrap's own CSS variables in `static/css/app.css`; icons are Bootstrap Icons; the typeface is Inter. All three are vendored under `static/vendor/` (see `static/vendor/README.md` for versions and licences), so the site has no CDN dependency and Vercel needs no build step.
 - **Answer formatting:** the server turns scraped text into tidy markdown (`prose()`: one paragraph per line, call-to-action labels like "Apply Now" removed, split dates re-joined; replies start with a `###` title and a muted `~` subtitle). `md.js` renders it safely (HTML is escaped, links are http(s) only, tables are responsive).
 - **Tests:** `pytest` (Python) and `node --test tests/js/md.test.mjs` (the markdown renderer).
+
+## Agent architecture
+
+The agent calls typed tools; tools read a read-only data source (MySQL `agent_ro`, or an API later) or the scraped corpus. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).

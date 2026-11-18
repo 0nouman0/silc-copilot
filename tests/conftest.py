@@ -96,6 +96,7 @@ def demo_env(monkeypatch):
     monkeypatch.setenv("INTEGRATION_MODE", "demo")
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     monkeypatch.delenv("SESSION_SECRET", raising=False)
+    monkeypatch.setenv("CATALOGUE_SOURCE", "none")  # tests never touch a real database unless they inject a source
     for k in ("LLM_MODEL", "AGENT_MODE", "LLM_PROVIDER", "LLM_BASE_URL", "LLM_DECISIONS_URL"):
         monkeypatch.delenv(k, raising=False)
 
