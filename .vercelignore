@@ -8,3 +8,6 @@ __pycache__
 .env
 *.log
 requirements-dev.txt
+*.sql
+*.sql.gz
+.vercel
