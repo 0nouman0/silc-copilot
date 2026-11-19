@@ -1,4 +1,4 @@
-// Small, SAFE markdown renderer for assistant replies and scraped page text.
+// Small, SAFE markdown renderer for assistant replies and database text.
 // Order matters: escape ALL HTML first, then add our own tags. Links are limited to http(s).
 const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 const NEW_TAB = 'target="_blank" rel="noopener noreferrer"';
@@ -80,7 +80,7 @@ export function renderMarkdown(src) {
   return out.join("");
 }
 
-/** Scraped page text has one block per line. Give each line its own paragraph, keeping tables and lists together. */
+/** Database text has one block per line. Give each line its own paragraph, keeping tables and lists together. */
 export function paragraphize(text) {
   const out = [];
   let group = [], kind = null;

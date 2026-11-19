@@ -1,8 +1,6 @@
 .venv
 data
 tests
-scraper
-scrape.py
 __pycache__
 .pytest_cache
 .env

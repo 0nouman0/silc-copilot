@@ -8,6 +8,7 @@ from .base import CatalogueSource, SourceUnavailable
 from .mysql_source import MySqlSource
 
 _override: CatalogueSource | None = None
+_cached: tuple[tuple, CatalogueSource | None] | None = None
 
 
 def set_source(src: CatalogueSource | None) -> None:
@@ -16,15 +17,22 @@ def set_source(src: CatalogueSource | None) -> None:
     _override = src
 
 
+def _env_key() -> tuple:
+    return tuple(os.getenv(k) for k in ("CATALOGUE_SOURCE", "CATALOGUE_API_URL", "AGENT_DB_USER", "AGENT_DB_PASSWORD",
+                                        "APPLICANT_DB_HOST", "APPLICANT_DB_PORT", "APPLICANT_DB_NAME"))
+
+
 def get_source() -> CatalogueSource | None:
+    """One shared instance per configuration (callers cache derived data against the instance)."""
+    global _cached
     if _override is not None:
         return _override
-    choice = os.getenv("CATALOGUE_SOURCE", "").lower()
-    if choice == "none":
-        return None
-    if choice == "api":
-        return ApiSource.from_env()
-    return MySqlSource.from_env()
+    key = _env_key()
+    if _cached is None or _cached[0] != key:
+        choice = (os.getenv("CATALOGUE_SOURCE") or "").lower()
+        src = None if choice == "none" else ApiSource.from_env() if choice == "api" else MySqlSource.from_env()
+        _cached = (key, src)
+    return _cached[1]
 
 
 __all__ = ["CatalogueSource", "SourceUnavailable", "get_source", "set_source"]

@@ -5,7 +5,7 @@ import json
 from dataclasses import dataclass, field
 
 from ..applicants.adapter import Application
-from ..christ.models import SourceRef
+from ..models import SourceRef
 from ..llm.base import LLMProvider, Message
 from ..tools import ToolContext, execute, tool_defs
 from .prompt import build_system_prompt
@@ -21,10 +21,10 @@ _FOLLOW_UPS = {
     "get_admission_dates": ["How do I apply?", "What are the fees?"],
     "get_programme_details": ["What is the eligibility for this programme?", "What are the fees?"],
     "search_programmes": ["Compare these programmes", "Help me check my eligibility"],
-    "get_scholarships": ["How do I apply for a scholarship?", "What are the fees?"],
-    "get_required_documents": ["What are the application deadlines?", "How do I apply?"],
+    "get_curriculum": ["What is the eligibility for this programme?", "What are the fees?"],
+    "get_admission_process": ["What are the application dates?", "Show me the programmes available"],
     "get_application_status": ["What should I do next?", "What documents are required?"],
-    "get_hostel_information": ["What are the campus facilities?", "What are the fees?"],
+    "list_campuses": ["Show me the programmes available", "What are the application dates?"],
 }
 _DEFAULT_FOLLOW_UPS = ["Show me the programmes available", "How do I contact the Admissions Office?"]
 

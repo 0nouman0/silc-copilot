@@ -12,6 +12,7 @@ from .base import SourceUnavailable
 from .text import html_to_text
 
 ROW_CAP = 200
+CATALOGUE_CAP = 2000   # the whole offered-programme list is read in one query
 MAX_MS = 5000
 
 # Section kinds -> SQL LIKE patterns on course_related_links.rel_link_name
@@ -22,9 +23,14 @@ SECTION_PATTERNS: dict[str, list[str]] = {
     "outcomes": ["%Outcome%"],
     "structure": ["%Structure%"],
     "entrance_test": ["%Entrance%"],
+    "placements": ["Placement%"],
+    "scholarship": ["Merit Scholarship%", "Scholarship%"],
 }
 LEVELS = {"undergraduate": "UNDERGRADUATE", "postgraduate": "POSTGRADUATE", "doctoral": "DOCTORAL%", "international": "International%"}
 HIGHLIGHT_TYPES = {1: "why_choose", 2: "what_you_will_learn", 3: "careers", 4: "modules"}
+
+
+_FILE_ONLY = re.compile(r"[^\n]{1,200}\.(pdf|docx?|pptx?|xlsx?)", re.I)
 
 
 def _like(term: str) -> str:
@@ -46,7 +52,7 @@ class MySqlSource:
                    os.getenv("APPLICANT_DB_NAME", "applicant"), user, pw)
 
     # ------------------------------------------------------------------ plumbing
-    def _rows(self, sql: str, params: tuple = ()) -> list[dict[str, Any]]:
+    def _rows(self, sql: str, params: tuple = (), cap: int = ROW_CAP) -> list[dict[str, Any]]:
         try:
             import pymysql
             from pymysql.cursors import DictCursor
@@ -59,7 +65,7 @@ class MySqlSource:
                 cur.execute("SET SESSION TRANSACTION READ ONLY")
                 cur.execute(f"SET SESSION MAX_EXECUTION_TIME={MAX_MS}")
                 cur.execute(sql, params)
-                return list(cur.fetchmany(ROW_CAP))
+                return list(cur.fetchmany(cap))
         except Exception as e:  # noqa: BLE001
             raise SourceUnavailable(f"query failed: {type(e).__name__}") from e
         finally:
@@ -92,8 +98,15 @@ class MySqlSource:
                 "application_open": self._iso(r.get("course_appl_avail_on")), "application_close": self._iso(r.get("course_appl_close_on")),
                 "record_last_modified": self._iso(r.get("course_modified_date"))}
 
+    _OFFERED = "c.course_status='Y' AND cc.course_cat_status='Y'"   # active course in a category the university currently offers
+
+    def list_catalogue(self) -> list[dict[str, Any]]:
+        """Every programme currently on offer (one row per campus listing), for name resolution and the browse pages."""
+        rows = self._rows(self._COURSE + "WHERE " + self._OFFERED + " ORDER BY c.course_name, c.course_id", cap=CATALOGUE_CAP)
+        return [self._shape(r) for r in rows]
+
     def search_courses(self, query: str, level: str | None, campus: str | None, limit: int) -> list[dict[str, Any]]:
-        where: list[str] = ["c.course_status='Y'"]
+        where: list[str] = [self._OFFERED]
         params: list[Any] = []
         for tok in re.findall(r"[A-Za-z0-9&]+", query or "")[:6]:
             where.append("c.course_name REGEXP %s")  # whole-word match: 'mba' must not hit 'Mumbai'
@@ -133,7 +146,7 @@ class MySqlSource:
         for r in rows:  # newest active row per section name
             key = (r["rel_link_name"] or "").strip().lower()
             text = html_to_text(r["rel_link_description"])
-            if key in seen or not text:
+            if key in seen or not text or _FILE_ONLY.fullmatch(text):  # skip empty rows and rows that only name an attached file
                 continue
             seen.add(key)
             out.append({"section": r["rel_link_name"].strip(), "text": text, "added": self._iso(r["rel_link_added_date"])})
@@ -147,7 +160,7 @@ class MySqlSource:
                 kind = HIGHLIGHT_TYPES.get(int(r["chrType"]), "other")
             except (TypeError, ValueError):
                 kind = "other"
-            out.append({"kind": kind, "title": (r["chrTitle"] or "").strip(), "text": html_to_text(r["chrDescription"])})
+            out.append({"kind": kind, "title": html_to_text(r["chrTitle"]).replace("\n", " "), "text": html_to_text(r["chrDescription"])})
         return out
 
     def get_curriculum(self, course_id: int, year: str | None) -> list[dict[str, Any]]:

@@ -6,103 +6,60 @@ import pytest
 
 from app.sources import SourceUnavailable, set_source
 from app.sources.mysql_source import MySqlSource, _like
-from app.sources.text import html_to_text
-from app.tools.registry import ToolContext, available_tools, execute
+from app.sources.text import html_to_text, tidy
+from app.tools.registry import ToolContext, execute
 
 CTX = ToolContext()
+NL = chr(10)
 
 
-class Fake:
-    name = "fake"
-
-    def __init__(self, down=False):
-        self.down = down
-
-    def _chk(self):
-        if self.down:
-            raise SourceUnavailable("down")
-
-    def search_courses(self, query, level, campus, limit):
-        self._chk()
-        return [{"course_id": 334, "name": "Master of Business Administration (MBA)", "level": "Postgraduate", "campus": "Central",
-                 "department": "Business", "duration_years": 2}] if "mba" in query.lower() else []
-
-    def get_course(self, cid):
-        self._chk()
-        return {"course_id": cid, "name": "MBA", "overview": "x" * 5000, "selection_process": None} if cid == 334 else None
-
-    def get_sections(self, cid, kind):
-        self._chk()
-        return [{"section": "Eligibility-2027", "text": "50% aggregate", "added": "2026-01-01"}] if kind == "eligibility" else []
-
-    def get_highlights(self, cid):
-        return []
-
-    def get_curriculum(self, cid, year):
-        return [{"year": "Year 1", "term": "1", "focus": "Core", "subjects": [{"category": "Core", "subject": "Accounting", "credits": 3}]}]
-
-    def get_roadmap(self, cid):
-        return []
-
-    def get_admission_process(self, g):
-        return [{"group": "pg mangement", "how_to_apply": "online", "eligibility": "", "selection": "", "admission_dates": "", "contact_note": ""}]
-
-    def list_campuses(self):
-        return [{"campus_id": 1, "name": "Central"}]
-
-    def ping(self):
-        return True
-
-
-@pytest.fixture
-def fake():
-    set_source(Fake())
-    yield
+def test_tools_report_unavailable_without_a_source(monkeypatch):
     set_source(None)
+    monkeypatch.setenv("CATALOGUE_SOURCE", "none")
+    assert execute("search_programmes", json.dumps({"query": "mba"}), CTX).data["error"] == "catalogue_unavailable"
 
 
-def test_db_tools_hidden_without_source():
-    assert not [t for t in available_tools(CTX) if t.name.startswith("db_")]
-    out = execute("db_search_programmes", "{}", CTX)
-    assert out.data["error"] == "tool_unavailable"
+def test_source_instance_is_shared_per_configuration(monkeypatch):
+    from app.sources import get_source
+    set_source(None)
+    monkeypatch.setenv("CATALOGUE_SOURCE", "mysql")
+    monkeypatch.setenv("AGENT_DB_USER", "u")
+    monkeypatch.setenv("AGENT_DB_PASSWORD", "p")
+    assert get_source() is get_source()  # the catalogue caches derived data against this instance
 
 
-def test_db_tools_offered_with_source(fake):
-    names = {t.name for t in available_tools(CTX)}
-    assert {"db_search_programmes", "db_get_programme_section", "db_get_curriculum"} <= names
-
-
-def test_search_and_details(fake):
-    r = execute("db_search_programmes", json.dumps({"query": "MBA"}), CTX).data
-    assert r["programmes"][0]["course_id"] == 334
-    assert execute("db_search_programmes", json.dumps({"query": "zzz"}), CTX).data["found"] is False
-    d = execute("db_get_programme_details", json.dumps({"course_id": 334}), CTX).data
-    assert len(d["programme"]["overview"]) < 2200 and "snapshot" in d["note"]
-    assert execute("db_get_programme_details", json.dumps({"course_id": 1}), CTX).data["found"] is False
-
-
-def test_section_validates_parameters(fake):
-    ok = execute("db_get_programme_section", json.dumps({"course_id": 334, "section": "eligibility"}), CTX).data
-    assert ok["sections"][0]["text"] == "50% aggregate"
-    bad = execute("db_get_programme_section", json.dumps({"course_id": 334, "section": "'; DROP TABLE courses;--"}), CTX).data
+def test_section_validates_parameters():
+    ok = execute("get_programme_section", json.dumps({"programme_id": 334, "section": "eligibility"}), CTX).data
+    assert "50%" in ok["sections"][0]["text"]
+    bad = execute("get_programme_section", json.dumps({"programme_id": 334, "section": "'; DROP TABLE courses;--"}), CTX).data
     assert bad["error"] == "invalid_arguments"
-    assert execute("db_get_programme_section", json.dumps({"course_id": "abc", "section": "fees"}), CTX).data["error"] == "invalid_arguments"
-    assert execute("db_get_programme_section", json.dumps({"course_id": 334, "section": "fees"}), CTX).data["found"] is False
+    assert execute("get_programme_section", json.dumps({"programme_id": "abc", "section": "fees"}), CTX).data["error"] == "invalid_arguments"
+    assert execute("get_programme_section", json.dumps({"programme_id": 501, "section": "fees"}), CTX).data["found"] is False
 
 
-def test_source_down_is_reported_not_guessed():
-    set_source(Fake(down=True))
-    try:
-        r = execute("db_get_programme_details", json.dumps({"course_id": 334}), CTX).data
-    finally:
-        set_source(None)
-    assert r["error"] == "catalogue_unavailable"
+def test_html_to_text_builds_markdown_tables_lists_and_drops_scripts():
+    t = html_to_text("<p>Fees</p><table><tr><th><div>Year</div></th><th>NRI</th></tr><tr><td>1</td><td><div>6,70,000 INR</div></td></tr></table>"
+                     "<ul><li>x</li></ul><script>bad()</script>")
+    assert NL.join(["| Year | NRI |", "|---|---|", "| 1 | 6,70,000 INR |"]) in t and "- x" in t and "bad" not in t
+    assert html_to_text("<table><tr><td>only one column</td></tr></table>") == "only one column"  # layout table stays plain text
+    assert html_to_text(None) == ""
 
 
-def test_html_to_text_and_like_escape():
-    t = html_to_text("<p>Fees</p><table><tr><td>A</td><td>1,000</td></tr></table><ul><li>x</li></ul><script>bad()</script>")
-    assert "A | 1,000" in t and "- x" in t and "bad" not in t
-    assert _like("50%_x") == r"%50\%\_x%"
+def test_html_to_text_removes_stray_encoding_byte_and_tidy_keeps_wording():
+    assert html_to_text("<p>Risk and Â Financial Advisory</p>") == "Risk and Financial Advisory"
+    out = tidy(NL.join(["Intro", "- a", "- b", "| H | I |", "|---|---|", "| 1 | 2 |", "Outro"]))
+    assert out == (NL * 2).join(["Intro", NL.join(["- a", "- b"]), NL.join(["| H | I |", "|---|---|", "| 1 | 2 |"]), "Outro"]) and tidy(None) == ""
+
+
+def test_like_escape():
+    assert _like("50%_x") == "%50" + chr(92) + "%" + chr(92) + "_x%"
+
+
+def test_file_only_rows_are_recognised():
+    from app.sources.mysql_source import _FILE_ONLY
+    assert _FILE_ONLY.fullmatch("Placement Highlights_pptx-2_20260722111258.pdf")
+    assert not _FILE_ONLY.fullmatch("Top recruiters visit. See brochure.pdf for more details" + NL + "and more")
+
 
 
 # ------------------------------------------------------------------ live DB (only when the local server + agent_ro exist)

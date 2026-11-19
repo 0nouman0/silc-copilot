@@ -69,3 +69,16 @@ def session_secret() -> str:
     if integration_mode() == "production":
         raise RuntimeError("SESSION_SECRET must be set in production mode.")
     return "dev-only-insecure-session-secret"  # never used in production mode
+
+
+DEFAULT_COMPOSE_MODELS = ("nvidia/nemotron-3.5-lightning:free,inclusionai/ling-3.2-flash:free,"
+                          "google/gemma-4-31b-it:free,openrouter/free")
+
+
+def compose_models() -> list[str]:
+    """Chat models that rewrite verified answers in natural language (tried in order; free models come and go).
+    COMPOSE=off disables the step. COMPOSE_MODELS overrides the list."""
+    if os.getenv("COMPOSE", "on").lower() in ("off", "0", "false", "no"):
+        return []
+    raw = os.getenv("COMPOSE_MODELS") or DEFAULT_COMPOSE_MODELS
+    return [m.strip() for m in raw.split(",") if m.strip()]

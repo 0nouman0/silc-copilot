@@ -25,7 +25,7 @@ class ApiSource:
     def _nope(self, *a, **k):
         raise SourceUnavailable("catalogue API adapter is not implemented yet")
 
-    search_courses = get_course = get_sections = get_highlights = get_curriculum = get_roadmap = get_admission_process = list_campuses = _nope
+    list_catalogue = search_courses = get_course = get_sections = get_highlights = get_curriculum = get_roadmap = get_admission_process = list_campuses = _nope
 
     def ping(self) -> bool:
         return False

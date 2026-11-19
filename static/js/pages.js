@@ -10,12 +10,16 @@ const fmtDate = (s) => {
 };
 const prose = (text, extra = "") => h("div", { class: `prose ${extra}`.trim(), html: renderMarkdown(paragraphize(text)) });
 
-// open / upcoming / closed, from the catalogue's application window (ISO strings compare correctly)
+// open / upcoming / closed, from the application window stored on the programme record (ISO strings compare correctly).
+// A record with only an old opening date and no closing date says nothing reliable, so it gets no badge.
 const windowStatus = (open, close) => {
   const today = new Date().toISOString().slice(0, 10);
-  if (close && close < today) return "closed";
-  if (open && open > today) return "upcoming";
-  return open || close ? "open" : null;
+  if (close) return close < today ? "closed" : open && open > today ? "upcoming" : "open";
+  return open && open > today ? "upcoming" : null;
+};
+const duration = (y) => {
+  const n = Number(y);
+  return !y || !n ? null : `${n} year${n === 1 ? "" : "s"}`;
 };
 const STATUS = {
   open: { label: "Open now", tone: "success", icon: "check-circle" },
@@ -39,7 +43,7 @@ const pageHead = (title, lede, ...actions) => {
     acts.length ? h("div", { class: "d-flex flex-wrap gap-2 mt-3" }, acts) : null);
 };
 const empty = (t, ic = "search") => h("div", { class: "state" }, icon(ic, "fs-2 d-block mb-2"), t);
-const srcLine = (url, label = "Source: christuniversity.in") => h("p", { class: "srcline mt-3 mb-0" }, icon("link-45deg", "me-1"),
+const srcLine = (url, label = "Source: CHRIST programme database") => h("p", { class: "srcline mt-3 mb-0" }, icon("link-45deg", "me-1"),
   url ? h("a", { href: url, target: "_blank", rel: "noopener noreferrer" }, label) : label);
 const askBtn = (text, navigate) => h("button", { class: "btn btn-outline-primary d-inline-flex align-items-center gap-2", type: "button", onclick: () => {
   try { sessionStorage.setItem("silc_prefill", text); } catch { /* ignore */ }
@@ -95,7 +99,7 @@ export async function programmesPage() {
 
   const card = (p) => h("div", { class: "col" }, h("a", { class: "card card-link h-100 text-decoration-none text-body", href: `/programmes/${p.id}`, "data-link": "" },
     h("div", { class: "card-body" },
-      h("div", { class: "d-flex flex-wrap gap-1 mb-2" }, levelBadge(p.level), p.duration ? h("span", { class: "badge bg-light text-secondary border fw-medium" }, icon("clock", "me-1"), p.duration) : null),
+      h("div", { class: "d-flex flex-wrap gap-1 mb-2" }, levelBadge(p.level), duration(p.duration_years) ? h("span", { class: "badge bg-light text-secondary border fw-medium" }, icon("clock", "me-1"), duration(p.duration_years)) : null),
       h("h2", { class: "h6 mb-1 lh-sm" }, p.name),
       h("div", { class: "small text-secondary" }, icon("geo-alt", "me-1"), p.campus || "Campus not listed")),
     h("div", { class: "card-footer bg-transparent border-0 pt-0 pb-3" }, statusBadge(p.application_open, p.application_close, true))));
@@ -124,11 +128,11 @@ export async function programmesPage() {
   const refilter = () => { clearTimeout(timer); timer = setTimeout(() => { page = 1; load(false); }, 250); };
   q.addEventListener("input", refilter); lvl.addEventListener("change", refilter); campus.addEventListener("change", refilter);
   load(false);
-  return wrap(pageHead("Explore programmes", "Programmes listed on the CHRIST website, with campus and application status."),
+  return wrap(pageHead("Explore programmes", "Programmes in the CHRIST programme database, with campus and recorded application window."),
     h("div", { class: "filterbar mb-3" }, h("div", { class: "row g-2" },
       h("div", { class: "col-12 col-lg-6" }, h("div", { class: "input-group" }, h("span", { class: "input-group-text bg-white" }, icon("search")), q)),
       h("div", { class: "col-6 col-lg-3" }, lvl), h("div", { class: "col-6 col-lg-3" }, campus))),
-    count, top, grid, bottom, srcLine(first.source, "Source: CHRIST programme catalogue"));
+    count, top, grid, bottom, srcLine(null, "Source: CHRIST programme database"));
 }
 
 // ---------------------------------------------------------------- programme detail
@@ -141,13 +145,9 @@ function accordion(items, id) {
 
 export async function programmeDetailPage({ navigate, params }) {
   const { programme: p } = await api(`/programmes/${encodeURIComponent(params.id)}`);
-  const qf = p.quick_facts || {};
   const stat = (ic, k, v) => h("div", { class: "col" }, h("div", { class: "stat" }, h("div", { class: "k" }, icon(ic), k), h("div", { class: "v" }, v ?? na(null, "Not listed"))));
-  const overview = (p.overview || "").split("About the Programme")[1] || p.overview || "";
-  const buttons = [extLink(p.url, "Official programme page")];
-  if (p.apply_url) buttons.push(extLink(p.apply_url, "Apply online", "btn btn-outline-primary"));
-  if (p.brochure_url) buttons.push(extLink(p.brochure_url, "Brochure (PDF)", "btn btn-outline-primary", "file-earmark-pdf"));
-  buttons.push(askBtn(`Tell me about ${p.name}`, navigate));
+  const overview = p.overview || p.summary || "";
+  const buttons = [askBtn(`Tell me about ${p.name}`, navigate)];
   const sections = [{ title: "Eligibility", text: p.eligibility, open: true, icon: "patch-check" }, { title: "Fees", text: p.fees, open: true, icon: "cash-stack" },
     ...p.tabs.map((t) => ({ title: t.title, text: t.text, icon: "journal-text" }))];
 
@@ -159,11 +159,11 @@ export async function programmeDetailPage({ navigate, params }) {
         statusBadge(p.application_open, p.application_close)),
       h("h1", { class: "page-title mb-3" }, p.name), h("div", { class: "d-flex flex-wrap gap-2" }, buttons)),
     h("div", { class: "row row-cols-2 row-cols-md-3 row-cols-xl-6 g-3 mb-4" },
-      stat("clock", "Duration", qf.duration), stat("collection", "Semesters", qf.semesters), stat("person-workspace", "Mode", qf.mode),
-      stat("translate", "Medium", qf.medium), stat("calendar-event", "Applications open", fmtDate(p.application_open)), stat("calendar-check", "Applications close", fmtDate(p.application_close))),
+      stat("clock", "Duration", duration(p.duration_years)), stat("collection", "Term type", p.term_type ? cap(p.term_type) : null), stat("people", "Approved intake", p.approved_intake),
+      stat("building", "Department", p.department), stat("calendar-event", "Recorded opening", fmtDate(p.application_open)), stat("calendar-check", "Recorded closing", fmtDate(p.application_close))),
     overview.trim() ? h("div", { class: "card mb-4" }, h("div", { class: "card-body p-4" }, h("h2", { class: "h5 mb-3" }, "About the programme"), prose(overview.trim().slice(0, 2200)))) : null,
     accordion(sections, "prog"),
-    srcLine(p.url, "Source: this programme's page on christuniversity.in"));
+    srcLine(null, "Source: CHRIST programme database. Application dates are as recorded there and may be out of date."));
 }
 
 // ---------------------------------------------------------------- shared programme picker
@@ -198,7 +198,7 @@ export async function eligibilityPage({ navigate } = {}) {
         h("div", { class: `result alert alert-${tone} d-flex gap-3 align-items-start`, role: "status" }, icon(tone === "danger" ? "x-octagon" : "patch-exclamation", "fs-4"),
           h("div", {}, h("div", { class: "fw-semibold" }, r.result.label), h("div", {}, r.result.detail), h("div", { class: "disclaimer small mt-2 opacity-75" }, r.result.disclaimer))),
         h("div", { class: "card" }, h("div", { class: "card-body p-4" }, h("h2", { class: "h5 mb-3" }, `Published eligibility — ${r.programme.name}`),
-          r.eligibility ? prose(r.eligibility) : empty("No eligibility text is published for this programme."), srcLine(r.programme.url))));
+          r.eligibility ? prose(r.eligibility) : empty("No eligibility text is stored for this programme in the database."), srcLine(null))));
     } catch (e) { out.replaceChildren(h("div", { class: "alert alert-danger", role: "alert" }, e.message)); }
   };
   go.addEventListener("click", run);
@@ -230,12 +230,12 @@ export async function admissionsPage() {
   toggle.addEventListener("change", draw); draw();
   const tile = (ic, tone, label, n) => h("div", { class: "col" }, h("div", { class: "stat d-flex align-items-center gap-3" }, h("span", { class: `icon-tile bg-${tone}-subtle text-${tone}-emphasis` }, icon(ic)),
     h("div", {}, h("div", { class: "fs-4 fw-semibold lh-1" }, String(n)), h("div", { class: "small text-secondary" }, label))));
-  return wrap(pageHead("Admissions & application dates", "Application windows as listed in the CHRIST programme catalogue."),
+  return wrap(pageHead("Admissions & application dates", d.note || "Application windows as recorded in the CHRIST programme database."),
     h("div", { class: "row row-cols-1 row-cols-sm-3 g-3 mb-4" }, tile("check-circle", "success", "Open now", count("open")), tile("hourglass-split", "primary", "Opening soon", count("upcoming")), tile("x-circle", "secondary", "Closed", count("closed"))),
     h("div", { class: "form-check form-switch mb-3" }, toggle, h("label", { class: "form-check-label", for: "showClosed" }, "Show closed windows")),
     h("div", { class: "card" }, h("div", { class: "table-responsive" }, h("table", { class: "table table-hover align-middle mb-0" },
       h("thead", { class: "table-light" }, h("tr", {}, ["Level", "Campus", "Opens", "Closes", "Status", "Programmes"].map((t, i) => h("th", { scope: "col", class: i === 5 ? "text-end" : "" }, t)))), body))),
-    srcLine(d.source, "Source: CHRIST programme catalogue"),
+    srcLine(null, "Source: CHRIST programme database"),
     h("div", { class: "d-flex flex-wrap gap-2 mt-4" }, h("a", { class: "btn btn-primary", href: "/apply", "data-link": "" }, "How to apply"), h("a", { class: "btn btn-outline-primary", href: "/programmes", "data-link": "" }, "Browse programmes")));
 }
 
@@ -247,8 +247,8 @@ export async function feesPage({ navigate } = {}) {
     try {
       const { programme } = await api(`/programmes/${p.id}`);
       box.replaceChildren(programme.fees
-        ? h("div", { class: "card" }, h("div", { class: "card-body p-4" }, h("h2", { class: "h5 mb-3" }, programme.name), prose(programme.fees), srcLine(programme.url)))
-        : empty("A fee structure for this programme is not published on the CHRIST website pages I collected. Please contact the Admissions Office.", "cash-stack"));
+        ? h("div", { class: "card" }, h("div", { class: "card-body p-4" }, h("h2", { class: "h5 mb-3" }, programme.name), prose(programme.fees), srcLine(null)))
+        : empty("A fee structure for this programme is not stored in the CHRIST programme database. Please contact the Admissions Office.", "cash-stack"));
     } catch (e) { box.replaceChildren(h("div", { class: "alert alert-danger", role: "alert" }, e.message)); }
   });
   return wrap(pageHead("Fee structure", "Fees are shown exactly as published, by applicant category. Missing fees are never estimated."),
@@ -256,39 +256,43 @@ export async function feesPage({ navigate } = {}) {
     h("div", { class: "mt-4" }, askBtn("Show me the programme fee structure and other charges.", navigate)));
 }
 
-// ---------------------------------------------------------------- topic pages (scraped pages grouped by subject)
-function topicPage(name, title, lede, toolbar) {
-  return async function ({ navigate } = {}) {
-    const d = await api(`/topic/${name}`);
-    return wrap(pageHead(title, lede, toolbar ? toolbar(d, navigate) : null),
-      d.results.length
-        ? h("div", { class: "row row-cols-1 row-cols-lg-2 g-3" }, d.results.map((r) => h("div", { class: "col" }, h("div", { class: "card h-100" },
-          h("div", { class: "card-body p-4" },
-            h("h2", { class: "h6 mb-1" }, r.heading && r.heading !== r.title ? r.heading : r.title),
-            h("div", { class: "srcline mb-3" }, r.title),
-            prose(r.excerpt + (r.excerpt.length >= 700 ? "…" : ""))),
-          h("div", { class: "card-footer bg-transparent border-0 pb-3" },
-            h("a", { href: r.url, class: "text-decoration-none fw-medium", target: "_blank", rel: "noopener noreferrer" }, r.external ? "Source (external)" : "Read on christuniversity.in", " ", icon("box-arrow-up-right", "small")))))))
-        : empty("I couldn't find pages on this topic in the information collected from the CHRIST website."));
-  };
+// ---------------------------------------------------------------- how to apply (admission process text from the database)
+export async function applyPage({ navigate } = {}) {
+  const d = await api("/admission-process");
+  // groups that share identical wording are shown once
+  const variants = new Map();
+  d.rows.forEach((r) => {
+    const key = [r.how_to_apply, r.eligibility, r.selection, r.admission_dates, r.contact_note].join("\u0001");
+    if (!variants.has(key)) variants.set(key, { groups: [], row: r });
+    variants.get(key).groups.push(r.group);
+  });
+  const FIELDS = [["how_to_apply", "How to apply"], ["eligibility", "Eligibility"], ["selection", "Selection"], ["admission_dates", "Results and offers"], ["contact_note", "Please note"]];
+  const cards = [...variants.values()].filter((v) => FIELDS.some(([k]) => v.row[k])).map((v) => h("div", { class: "col-12" }, h("div", { class: "card" }, h("div", { class: "card-body p-4" },
+    h("h2", { class: "h6 text-uppercase text-secondary mb-3" }, "Programme groups: ", v.groups.join(", ")),
+    accordion(FIELDS.map(([k, title], i) => ({ title, text: v.row[k], open: i === 0 })), `ap-${v.groups[0].replace(/\W+/g, "")}`)))));
+  return wrap(pageHead("How to apply", "The admission process as stored in the CHRIST programme database, by programme group.",
+    h("a", { class: "btn btn-outline-primary", href: "/admissions", "data-link": "" }, "Application dates"),
+    h("a", { class: "btn btn-outline-primary", href: "/programmes", "data-link": "" }, "Choose a programme"),
+    askBtn("Guide me through the application process.", navigate)),
+  cards.length ? h("div", { class: "row g-3" }, cards) : empty("No admission-process text is stored in the database."), srcLine(null));
 }
-export const scholarshipsPage = topicPage("scholarships", "Scholarships & financial assistance", "Pages from the CHRIST website about scholarships and fee support.");
-export const documentsPage = topicPage("documents", "Required documents", "What the CHRIST website says about documents for application and admission.");
-export const hostelPage = topicPage("hostel", "Hostel & accommodation", "Hostel and dining information from the CHRIST website.");
-export const campusesPage = topicPage("campuses", "Campuses & facilities", "Campus and facilities information from the CHRIST website.");
-export const placementsPage = topicPage("placements", "Placements & careers", "Placement and career-support information from the CHRIST website.");
-export const internationalPage = topicPage("international", "International students", "Information for international, NRI and foreign applicants.");
-export const applyPage = topicPage("apply", "How to apply", "Application steps and guidance from the CHRIST website.", (d, navigate) => [
-  d.apply_url ? extLink(d.apply_url, "Apply online") : null,
-  h("a", { class: "btn btn-outline-primary", href: "/admissions", "data-link": "" }, "Application dates"),
-  h("a", { class: "btn btn-outline-primary", href: "/programmes", "data-link": "" }, "Choose a programme"),
-  askBtn("Guide me through the application process.", navigate)]);
+
+// ---------------------------------------------------------------- campuses
+export async function campusesPage({ navigate } = {}) {
+  const d = await api("/campuses");
+  return wrap(pageHead("Campuses", "Active CHRIST campuses in the programme database."),
+    d.campuses.length
+      ? h("div", { class: "row row-cols-1 row-cols-md-2 row-cols-xl-3 g-3" }, d.campuses.map((c) => h("div", { class: "col" }, h("a", { class: "card card-link h-100 text-decoration-none text-body", href: `/programmes?campus=${encodeURIComponent(c.name)}`, "data-link": "" },
+        h("div", { class: "card-body d-flex align-items-center gap-3" }, h("span", { class: "icon-tile bg-primary-subtle text-primary-emphasis" }, icon("buildings")), h("div", {}, h("div", { class: "fw-semibold" }, c.name), h("div", { class: "small text-secondary" }, "See programmes")))))))
+      : empty("No campuses are listed in the database.", "buildings"),
+    h("p", { class: "small text-secondary mt-3" }, "Facilities, library and transport details are not stored in the programme database."), srcLine(null),
+    h("div", { class: "mt-3" }, askBtn("Which campuses does CHRIST have?", navigate)));
+}
 
 export async function supportPage({ navigate }) {
-  const page = await topicPage("contact", "Help & Admissions contact", "Contact information found on the CHRIST website.", (d, nav) => [askBtn("How do I contact the Admissions Office?", nav)])({ navigate });
-  page.append(h("div", { class: "alert alert-warning d-flex gap-3 mt-4 mb-0", role: "note" }, icon("info-circle", "fs-5"),
-    h("div", {}, "This assistant is unofficial. It can't create support tickets, verify payments or documents, or change your application. Please contact the CHRIST Admissions Office directly for those.")),
-  h("div", { class: "card mt-3" }, h("div", { class: "card-body" }, h("h2", { class: "h6" }, icon("shield-check", "me-2 text-primary"), "Privacy"),
-    h("p", { class: "mb-0 small text-secondary" }, "Questions you type are processed by the configured AI service to understand what you ask. Do not enter passwords, OTPs, card details or identity numbers."))));
-  return page;
+  return wrap(pageHead("Help", "What this assistant can and cannot do.", askBtn("What can you help me with?", navigate)),
+    h("div", { class: "alert alert-warning d-flex gap-3 mb-3", role: "note" }, icon("info-circle", "fs-5"),
+      h("div", {}, "Admissions phone numbers, email addresses, payment support and hostel information are not stored in the CHRIST programme database this assistant reads. Please use the official CHRIST website or contact the Admissions Office directly. This assistant is unofficial: it can't create support tickets, verify payments or documents, or change your application.")),
+    h("div", { class: "card" }, h("div", { class: "card-body" }, h("h2", { class: "h6" }, icon("shield-check", "me-2 text-primary"), "Privacy"),
+      h("p", { class: "mb-0 small text-secondary" }, "Questions you type are processed by the configured AI service to understand what you ask. Do not enter passwords, OTPs, card details or identity numbers."))));
 }

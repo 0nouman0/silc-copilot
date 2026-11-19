@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import os
 
-from ..config import decisions_url, llm_config
+from ..config import compose_models, decisions_url, llm_config
 from .base import LLMError, LLMProvider, LLMResponse, Message, ToolCall, ToolDef
 from .decisions import DecisionsClient
 from .openai_compatible import OpenAICompatibleProvider
 
-__all__ = ["get_decider", "DecisionsClient", "get_llm_provider", "LLMError", "LLMProvider", "LLMResponse", "Message", "ToolCall", "ToolDef"]
+__all__ = ["get_decider", "DecisionsClient", "get_llm_provider", "get_composer", "LLMError", "LLMProvider", "LLMResponse", "Message", "ToolCall", "ToolDef"]
 
 
 def get_decider() -> DecisionsClient:
@@ -35,3 +35,15 @@ def get_llm_provider() -> LLMProvider:
                  "X-Title": "SILC Student Applicant Copilot"}
     return OpenAICompatibleProvider(name=cfg.provider, api_key=cfg.api_key, model=cfg.model,
                                     base_url=cfg.base_url, timeout_s=cfg.timeout_s, extra_headers=extra)
+
+
+def get_composer():
+    """Natural-language rewriter for verified decision answers, or None when disabled / no key."""
+    from ..agent.composer import Composer
+    cfg = llm_config()
+    models = compose_models()
+    if not cfg.api_key or not models or cfg.provider != "openrouter":
+        return None
+    extra = {"HTTP-Referer": os.getenv("APP_URL", "http://localhost:8000"), "X-Title": "CHRIST Admissions Copilot"}
+    return Composer([OpenAICompatibleProvider(name="openrouter", api_key=cfg.api_key, model=m, base_url=cfg.base_url,
+                                              timeout_s=8.0, extra_headers=extra) for m in models])

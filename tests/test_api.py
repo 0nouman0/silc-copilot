@@ -36,15 +36,19 @@ def test_meta_has_data_info_and_no_secret(client, monkeypatch):
     monkeypatch.setenv("LLM_API_KEY", "super-secret-key")
     j = client.get("/api/meta").json()
     assert "super-secret-key" not in json.dumps(j) and j["llm"]["configured"] is True
-    assert j["data"]["ready"] is True and j["data"]["programmes"] == 6 and "CHRIST" in j["university"] and "unofficial" in j["product"]
+    assert j["data"]["ready"] is True and j["data"]["programmes"] == 7 and j["data"]["source"] == "CHRIST programme database" and "CHRIST" in j["university"] and "unofficial" in j["product"]
 
 
-def test_meta_reports_missing_data(client, monkeypatch, tmp_path):
-    from app.christ.store import reset_corpus
-    monkeypatch.setenv("CHRIST_DATA_DIR", str(tmp_path / "x"))
-    reset_corpus()
+def test_meta_and_pages_report_a_database_outage(client):
+    from app.catalogue import reset_catalogue
+    from app.sources import set_source
+    from tests.conftest import FakeSource
+    set_source(FakeSource(down=True))
+    reset_catalogue()
     assert client.get("/api/meta").json()["data"]["ready"] is False
-    assert client.get("/api/programmes").status_code == 503
+    for path in ("/api/programmes", "/api/programmes/334", "/api/dates", "/api/admission-process", "/api/campuses"):
+        r = client.get(path)
+        assert r.status_code == 503 and r.json()["error"]["code"] == "data_unavailable", path
 
 
 # ---- auth + applications
@@ -78,15 +82,15 @@ def test_decisions_mode_chat_returns_grounded_reply_with_links(client, monkeypat
     monkeypatch.setattr("app.routers.api.get_decider", lambda: FakeDecider("programme_fees"))
     j = chat(client, "mba fees").json()
     assert "5,70,000" in j["reply"] and j["intent"] == "programme_fees" and j["demo"] is False
-    assert j["sources"][0]["url"].endswith("/courses/334") and j["follow_ups"]
+    assert j["sources"][0]["url"] is None and "CHRIST programme database" in j["sources"][0]["title"] and j["follow_ups"]
 
 
 def test_tools_mode_runs_tool_loop(client, monkeypatch):
     monkeypatch.setenv("AGENT_MODE", "tools")
-    fake = FakeProvider([call("get_fee_structure", programme_id="334"), text("Fees are in the table.")])
+    fake = FakeProvider([call("get_fee_structure", programme_id=334), text("Fees are in the table.")])
     monkeypatch.setattr("app.routers.api.get_llm_provider", lambda: fake)
     j = chat(client, "MBA fees?").json()
-    assert j["tools_used"] == ["get_fee_structure"] and j["sources"][0]["url"].endswith("/courses/334")
+    assert j["tools_used"] == ["get_fee_structure"] and "Fees" in j["sources"][0]["title"]
     assert any(m.role == "tool" and "5,70,000" in m.content for m in fake.seen[1][0])
     assert "CHRIST" in fake.seen[0][0][0].content and "ONLY about" in fake.seen[0][0][0].content
 
@@ -125,41 +129,45 @@ def test_provider_errors_surface_cleanly(client, monkeypatch):
     assert r.status_code == 429 and r.json()["error"]["code"] == "rate_limited"
 
 
-# ---- data pages
+# ---- data pages (all read from the database)
 def test_programme_list_filters_and_pagination(client):
     j = client.get("/api/programmes").json()
-    assert j["total"] == 6 and "Bangalore Kengeri Campus" in j["campuses"]
+    assert j["total"] == 7 and "Bangalore Kengeri Campus" in j["campuses"] and j["source"] == "CHRIST programme database"
     assert client.get("/api/programmes?level=doctoral").json()["total"] == 1
-    assert client.get("/api/programmes?q=commerce").json()["programmes"][0]["id"] == "201"
+    assert client.get("/api/programmes?q=commerce").json()["programmes"][0]["id"] == 201
     assert len(client.get("/api/programmes?limit=2&offset=2").json()["programmes"]) == 2
 
 
 def test_programme_detail_and_not_found(client):
     p = client.get("/api/programmes/334").json()["programme"]
-    assert "5,70,000" in p["fees"] and p["tabs"][0]["title"] == "Selection Process" and p["url"].endswith("/courses/334")
-    assert client.get("/api/programmes/zzz").status_code == 404
+    assert "5,70,000" in p["fees"] and "50% marks" in p["eligibility"] and p["duration_years"] == 2 and p["department"] == "Business and Management"
+    titles = [t["title"] for t in p["tabs"]]
+    assert "Curriculum" in titles and "Career paths" in titles and "Placements" in titles and "url" not in p
+    assert "Managerial Economics" in next(t for t in p["tabs"] if t["title"] == "Curriculum")["text"]
+    assert not any(t["title"].lower().startswith(("eligib", "fee")) for t in p["tabs"])  # shown as their own sections
+    assert client.get("/api/programmes/99999").status_code == 404
+    assert client.get("/api/programmes/zzz").status_code == 422
 
 
-def test_dates_topics_and_eligibility_endpoints(client):
-    assert client.get("/api/dates").json()["windows"]
-    t = client.get("/api/topic/hostel").json()["results"]
-    assert t and t[0]["url"].endswith("/hostel")
-    assert client.get("/api/topic/unknown").status_code == 404
-    r = client.post("/api/eligibility", json={"programme_id": "201", "percentage": 40}).json()
+def test_dates_admission_process_campuses_and_eligibility_endpoints(client):
+    d = client.get("/api/dates").json()
+    assert d["windows"] and "out of date" in d["note"]
+    ap = client.get("/api/admission-process").json()["rows"]
+    assert {r["group"] for r in ap} == {"ug comm", "pg commer"} and "apply online" in ap[0]["how_to_apply"]
+    assert [c["name"] for c in client.get("/api/campuses").json()["campuses"]] == ["Bangalore Central Campus", "Bangalore Kengeri Campus"]
+    r = client.post("/api/eligibility", json={"programme_id": 201, "percentage": 40}).json()
     assert r["result"]["outcome"] == "may_not_meet" and "not an admission" in r["result"]["disclaimer"] and "50% marks" in r["eligibility"]
-    assert client.post("/api/eligibility", json={"programme_id": "201", "percentage": 140}).status_code == 422
-    assert client.post("/api/eligibility", json={"programme_id": "nope"}).status_code == 404
+    assert client.post("/api/eligibility", json={"programme_id": 201, "percentage": 140}).status_code == 422
+    assert client.post("/api/eligibility", json={"programme_id": 99999}).status_code == 404
+
+
+def test_scraped_topic_endpoint_is_gone(client):
+    assert client.get("/api/topic/hostel").status_code == 404
 
 
 def test_unknown_api_path_is_json_404_not_spa(client):
     r = client.get("/api/nope")
     assert r.status_code == 404 and r.headers["content-type"].startswith("application/json")
-
-
-def test_apply_topic_returns_guidance_and_the_shared_apply_link(client):
-    d = client.get("/api/topic/apply").json()
-    assert d["apply_url"] == "https://espro.christuniversity.in/Application/" and d["results"]
-    assert "apply_url" not in client.get("/api/topic/hostel").json()
 
 
 def test_long_assistant_history_is_accepted_but_long_user_messages_are_not(client, monkeypatch):
@@ -179,22 +187,3 @@ def test_long_assistant_history_is_accepted_but_long_user_messages_are_not(clien
     assert ok.status_code == 200 and "and the eligibility?" in seen["state"][-1]
     assert client.post("/api/chat", json={"messages": [{"role": "user", "content": "x" * 4001}]}).status_code == 422
     assert client.post("/api/chat", json={"messages": [{"role": "user", "content": "q"}, {"role": "assistant", "content": "y" * 20001}, {"role": "user", "content": "q"}]}).status_code == 422
-
-
-def test_topic_cards_are_clean_and_not_duplicated_across_sibling_sites(client, monkeypatch, tmp_path):
-    import json
-    from app.christ.store import reset_corpus
-    from tests.conftest import PAGES, PROGRAMMES
-    text = ("## How to apply online\nApplication process: apply online before the last date\nPay the Course Fee Online\n"
-            "Apply Now Get More Information\nLast date to apply\n29\nNovember 2026")
-    dup = [{"url": u, "host": h, "title": "Admissions", "kind": "page", "category": "admissions", "text": text}
-           for u, h in (("https://christuniversity.in/how-to-apply", "christuniversity.in"), ("https://ncr.christuniversity.in/how-to-apply", "ncr.christuniversity.in"))]
-    d = tmp_path / "dup"
-    d.mkdir()
-    (d / "programmes.json").write_text(json.dumps(PROGRAMMES), "utf-8")
-    (d / "pages.jsonl").write_text("\n".join(json.dumps(p) for p in PAGES + dup), "utf-8")
-    monkeypatch.setenv("CHRIST_DATA_DIR", str(d))
-    reset_corpus()
-    res = [r for r in client.get("/api/topic/apply").json()["results"] if "how-to-apply" in r["url"]]
-    assert len(res) == 1                                                  # the identical copy on the ncr. site is dropped
-    assert "Apply Now" not in res[0]["excerpt"] and "Last date to apply: 29 November 2026" in res[0]["excerpt"]

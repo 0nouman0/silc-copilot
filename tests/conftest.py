@@ -4,11 +4,11 @@ from datetime import date, timedelta
 import pytest
 from fastapi.testclient import TestClient
 
-from app.christ.store import reset_corpus
+from app.catalogue import reset_catalogue
 from app.llm.base import LLMResponse, ToolCall
 from app.main import app
+from app.sources import SourceUnavailable, set_source
 
-BASE = "https://christuniversity.in"
 # application window relative to today so "open now / closed" logic never makes tests time-dependent
 OPEN = (date.today() - timedelta(days=30)).isoformat()
 CLOSE = (date.today() + timedelta(days=60)).isoformat()
@@ -19,56 +19,112 @@ def fmt(iso):
     return f"{d.day} {d.strftime('%B %Y')}"
 
 
-def _prog(pid, name, level, campus, *, elig=None, fees=None, tabs=(), open_=OPEN, close=CLOSE, overview=None):
-    code = pid
-    return {"id": pid, "code": code, "name": name, "level": level, "campus": campus, "application_open": open_, "application_close": close,
-            "url": f"{BASE}/courses/{code}", "apply_url": "https://espro.christuniversity.in/Application/", "brochure_url": None,
-            "overview": overview or f"{campus}\n{name}\nProgramme Overview\nAbout the Programme\nThis is the official overview of {name} at CHRIST.",
-            "eligibility": elig, "fees": fees, "quick_facts": {"duration": "2 years", "mode": "Day Scholar", "medium": "English", "semesters": 4},
-            "tabs": [{"id": str(i), "kind": "common", "title": t, "text": x} for i, (t, x) in enumerate(tabs)]}
+def _row(cid, name, level, campus, *, dur=2, term="trimester", open_=OPEN, close=CLOSE, dept="Business and Management"):
+    return {"course_id": cid, "name": name, "code": None, "level": level, "campus": campus, "department": dept, "duration_years": dur,
+            "term_type": term, "credits": None, "approved_intake": 120, "application_open": open_, "application_close": close,
+            "record_last_modified": "2026-10-07"}
 
+
+CENTRAL, KENGERI = "Bangalore Central Campus", "Bangalore Kengeri Campus"
+COURSES = [
+    _row(334, "Master of Business Administration (MBA)", "Postgraduate", CENTRAL),
+    _row(341, "Master of Business Administration (MBA) (Executive)", "Postgraduate", CENTRAL),
+    _row(101, "Bachelor of Business Administration (BBA)", "Undergraduate", CENTRAL, dur=3, term="semester"),
+    _row(102, "Bachelor of Business Administration (BBA)", "Undergraduate", KENGERI, dur=3, term="semester"),
+    _row(501, "Doctor of Philosophy in Management (PhD)", "Doctoral (Phd)", CENTRAL, dur=3, term="year", open_=None, close=None),
+    _row(201, "Bachelor of Commerce (B.Com.)", "Undergraduate", CENTRAL, dur=3, term="semester", dept="Commerce"),
+    _row(601, "Master of Computer Applications (MCA)", "Postgraduate", CENTRAL, dept="Computer Science"),
+]
 
 FEES_MBA = ("1. Admission Registration Fee: INR 8000/- (Non-Refundable)\n2. Programme Fee (as per the table below)\n"
             "| Year | Karnataka | NRI |\n|---|---|---|\n| 1 | 5,70,000 INR | 6,70,000 INR |")
 ELIG_MBA = ("Candidates who have passed a Bachelor's degree with a minimum of 50% marks in aggregate are eligible.\n"
             "Candidates in the final year may apply provisionally.")
-PROGRAMMES = [
-    _prog("334", "Master of Business Administration (MBA)", "postgraduate", "Bangalore Central Campus", elig=ELIG_MBA, fees=FEES_MBA,
-          tabs=[("Selection Process", "Selection is based on the CHRIST entrance test, group discussion and interview."),
-                ("Curriculum", "Semester 1: Managerial Economics, Organisational Behaviour.")]),
-    _prog("341", "Master of Business Administration (MBA) (Executive)", "postgraduate", "Bangalore Central Campus", fees=FEES_MBA),
-    _prog("101", "Bachelor of Business Administration (BBA)", "undergraduate", "Bangalore Central Campus", elig="Pass at the +2 level with 45% marks.", fees=FEES_MBA),
-    _prog("102", "Bachelor of Business Administration (BBA)", "undergraduate", "Bangalore Kengeri Campus", elig="Pass at the +2 level with 45% marks.", fees=FEES_MBA),
-    _prog("501", "Doctor of Philosophy in Management (PhD)", "doctoral", "Bangalore Central Campus"),
-    _prog("201", "Bachelor of Commerce (B.Com.)", "undergraduate", "Bangalore Central Campus", elig="Pass at the +2 level with 50% marks.", fees=FEES_MBA),
+SECTIONS = {
+    334: {"eligibility": [("Eligibility-2027", ELIG_MBA)], "fees": [("Fee Structure - 2027", FEES_MBA)],
+          "selection": [("Selection Process", "Selection is based on the CHRIST entrance test, group discussion and interview.")],
+          "placements": [("Placements", "Top recruiters visit the campus every year.")]},
+    341: {"fees": [("Fee Structure", FEES_MBA)]},
+    101: {"eligibility": [("Eligibility", "Pass at the +2 level with 45% marks.")], "fees": [("Fees", FEES_MBA)]},
+    102: {"eligibility": [("Eligibility", "Pass at the +2 level with 45% marks.")], "fees": [("Fees", FEES_MBA)]},
+    201: {"eligibility": [("Eligibility", "Pass at the +2 level with 50% marks.")], "fees": [("Fees", FEES_MBA)]},
+}
+SECTION_KEY = {"eligibility": "eligibility", "fees": "fees", "selection": "selection", "placements": "placements"}
+PROCESS = [
+    {"group": "ug comm", "how_to_apply": "Register on the application portal and apply online for undergraduate programmes.",
+     "eligibility": "", "selection": "", "admission_dates": "Results are published on the status page.", "contact_note": "The university collects no capitation fee."},
+    {"group": "pg commer", "how_to_apply": "Register on the application portal and apply online for postgraduate programmes.",
+     "eligibility": "", "selection": "", "admission_dates": "", "contact_note": ""},
 ]
-PAGES = [
-    {"url": f"{BASE}/hostel", "host": "christuniversity.in", "title": "Hostel & Dining", "description": "", "kind": "page", "category": "hostel",
-     "text": "## Hostel facilities\nCHRIST provides separate hostels for men and women with Wi-Fi, laundry and mess facilities.\n## Hostel registration\nHostel registration opens after admission is confirmed."},
-    {"url": f"{BASE}/scholarships", "host": "christuniversity.in", "title": "Scholarships", "description": "", "kind": "page", "category": "scholarships",
-     "text": "## Merit scholarships\nCHRIST offers merit scholarships and freeships for deserving students based on published criteria."},
-    {"url": f"{BASE}/contact-us", "host": "christuniversity.in", "title": "Contact Us", "description": "", "kind": "page", "category": "contact",
-     "text": "## Admissions Office\nWrite to the admissions office or call the helpline listed on this page for enquiries."},
-    {"url": f"{BASE}/admission-home", "host": "christuniversity.in", "title": "Admissions", "description": "", "kind": "page", "category": "admissions",
-     "text": "## Application process\nApplications are submitted online through the CHRIST application portal. Create an account, fill the form and pay the registration fee.\n## Documents\nKeep your marks cards, photograph and identity proof ready."},
-    {"url": f"{BASE}/payment-help", "host": "christuniversity.in", "title": "Online Payment", "description": "", "kind": "page", "category": "fees",
-     "text": "## Payment issues\nIf an amount is debited but the payment is not confirmed, contact the payment support team with your transaction reference."},
-    {"url": f"{BASE}/about", "host": "christuniversity.in", "title": "About CHRIST", "description": "", "kind": "page", "category": "about",
-     "text": "## About\nCHRIST (Deemed to be University) is accredited with an A++ grade by NAAC."},
-    {"url": "https://example-blog.test/post", "host": "example-blog.test", "title": "CHRIST blog", "description": "", "kind": "external", "category": "events",
-     "source_label": "CHRIST blog", "text": "## Campus life\nStudents celebrated the annual cultural fest on campus."},
-]
+
+
+class FakeSource:
+    """In-memory CatalogueSource with the same dict shapes as MySqlSource."""
+    name = "fake"
+
+    def __init__(self, down=False):
+        self.down = down
+
+    def _chk(self):
+        if self.down:
+            raise SourceUnavailable("down")
+
+    def list_catalogue(self):
+        self._chk()
+        return [dict(c) for c in COURSES]
+
+    def search_courses(self, query, level, campus, limit):
+        self._chk()
+        return [c for c in COURSES if query.lower() in c["name"].lower()][:limit]
+
+    def get_course(self, cid):
+        self._chk()
+        c = next((c for c in COURSES if c["course_id"] == cid), None)
+        if not c:
+            return None
+        return {**c, "summary": f"{c['name']} is a programme at CHRIST.", "overview": f"Overview of {c['name']}. " + "x" * 3000,
+                "selection_process": None, "brochure": None}
+
+    def get_sections(self, cid, kind):
+        self._chk()
+        secs = SECTIONS.get(cid, {})
+        keys = [SECTION_KEY[kind]] if kind in SECTION_KEY else list(secs) if kind is None else []
+        return [{"section": n, "text": t, "added": "2026-01-01"} for k in keys for n, t in secs.get(k, [])]
+
+    def get_highlights(self, cid):
+        self._chk()
+        return [{"kind": "careers", "title": "Business Analyst", "text": ""}] if cid == 334 else []
+
+    def get_curriculum(self, cid, year):
+        self._chk()
+        if cid != 334:
+            return []
+        terms = [{"year": "Year 1", "term": "1", "focus": "Core", "subjects": [{"category": "Core", "subject": "Managerial Economics", "credits": 3}]},
+                 {"year": "Year 2", "term": "4", "focus": "Electives", "subjects": [{"category": "Elec", "subject": "Strategy", "credits": 3}]}]
+        return [t for t in terms if not year or t["year"].lower() == year.lower()]
+
+    def get_roadmap(self, cid):
+        return []
+
+    def get_admission_process(self, group):
+        self._chk()
+        return [r for r in PROCESS if not group or group.lower() in r["group"]]
+
+    def list_campuses(self):
+        self._chk()
+        return [{"campus_id": 1, "name": CENTRAL}, {"campus_id": 24, "name": KENGERI}]
+
+    def ping(self):
+        return not self.down
 
 
 @pytest.fixture(autouse=True)
-def christ_data(tmp_path, monkeypatch):
-    (tmp_path / "programmes.json").write_text(json.dumps(PROGRAMMES), "utf-8")
-    (tmp_path / "pages.jsonl").write_text("\n".join(json.dumps(p) for p in PAGES), "utf-8")
-    (tmp_path / "meta.json").write_text(json.dumps({"scraped_at": "2026-11-17T10:00:00+00:00", "source_site": BASE}), "utf-8")
-    monkeypatch.setenv("CHRIST_DATA_DIR", str(tmp_path))
-    reset_corpus()
+def catalogue_source():
+    set_source(FakeSource())
+    reset_catalogue()
     yield
-    reset_corpus()
+    set_source(None)
+    reset_catalogue()
 
 
 class FakeProvider:
@@ -96,7 +152,6 @@ def demo_env(monkeypatch):
     monkeypatch.setenv("INTEGRATION_MODE", "demo")
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     monkeypatch.delenv("SESSION_SECRET", raising=False)
-    monkeypatch.setenv("CATALOGUE_SOURCE", "none")  # tests never touch a real database unless they inject a source
     for k in ("LLM_MODEL", "AGENT_MODE", "LLM_PROVIDER", "LLM_BASE_URL", "LLM_DECISIONS_URL"):
         monkeypatch.delenv(k, raising=False)
 

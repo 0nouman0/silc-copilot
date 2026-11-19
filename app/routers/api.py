@@ -11,11 +11,12 @@ from .. import auth
 from ..agent.decision_engine import run_decision_agent
 from ..agent.orchestrator import run_agent
 from ..applicants.adapter import DEMO_USERS, ApplicantApiUnavailable, get_applicant_api
-from ..christ.eligibility_hint import hint
-from ..christ.format import prose
-from ..christ.store import DataNotReady, get_corpus
+from ..catalogue import get_catalogue
 from ..config import BRAND_PRODUCT, BRAND_UNIVERSITY, agent_mode, integration_mode, llm_config
-from ..llm import LLMError, get_decider, get_llm_provider
+from ..eligibility_hint import hint
+from ..llm import LLMError, get_composer, get_decider, get_llm_provider
+from ..sources import SourceUnavailable, get_source
+from ..sources.text import tidy
 
 router = APIRouter(prefix="/api")
 
@@ -34,11 +35,22 @@ def _rate_limit(request: Request, window: int = 60):
     q.append(now)
 
 
-def _corpus():
+def _unavailable() -> HTTPException:
+    return HTTPException(503, detail={"code": "data_unavailable", "message": "The CHRIST programme database cannot be reached right now. Please try again shortly."})
+
+
+def _catalogue():
     try:
-        return get_corpus()
-    except DataNotReady as e:
-        raise HTTPException(503, detail={"code": "data_not_ready", "message": str(e)})
+        return get_catalogue()
+    except SourceUnavailable:
+        raise _unavailable()
+
+
+def _db():
+    src = get_source()
+    if src is None:
+        raise _unavailable()
+    return src
 
 
 # ----------------------------------------------------------------- meta / session
@@ -46,9 +58,9 @@ def _corpus():
 def meta():
     cfg = llm_config()
     try:
-        data = {"ready": True, **get_corpus().stats()}
-    except DataNotReady as e:
-        data = {"ready": False, "message": str(e)}
+        data = {"ready": True, **get_catalogue().stats()}
+    except SourceUnavailable:
+        data = {"ready": False, "message": "The CHRIST programme database cannot be reached."}
     return {"product": BRAND_PRODUCT, "university": BRAND_UNIVERSITY, "mode": integration_mode(), "data": data,
             "llm": {"provider": cfg.provider, "model": cfg.model, "configured": bool(cfg.api_key), "agent_mode": agent_mode()},
             "demo_login": auth.demo_login_allowed()}
@@ -137,7 +149,7 @@ async def chat(body: ChatBody, request: Request):
     try:
         history = [{"role": m.role, "content": m.content if m.role == "user" else m.content[:HISTORY_KEEP]} for m in body.messages]
         if agent_mode() == "decisions":
-            result = await run_decision_agent(get_decider(), history, user_id=uid, active_application=active)
+            result = await run_decision_agent(get_decider(), history, user_id=uid, active_application=active, composer=get_composer())
         else:
             result = await run_agent(get_llm_provider(), history, user_id=uid, active_application=active)
     except LLMError as e:
@@ -147,82 +159,113 @@ async def chat(body: ChatBody, request: Request):
             "active_application_id": active.application_id if active else None}
 
 
-# ----------------------------------------------------------------- data for non-chat pages (scraped CHRIST content)
+# ----------------------------------------------------------------- data for non-chat pages (CHRIST programme database)
+DB_SOURCE = "CHRIST programme database"
+
+
 def _light(p):
-    return {"id": p.id, "name": p.name, "level": p.level, "campus": p.campus, "application_open": p.application_open,
-            "application_close": p.application_close, "duration": p.quick_facts.get("duration"), "url": p.url}
+    return {"id": p.id, "name": p.name, "level": p.level, "campus": p.campus, "department": p.department, "duration_years": p.duration_years,
+            "application_open": p.application_open, "application_close": p.application_close}
 
 
 @router.get("/programmes")
 def programmes(q: str | None = None, level: str | None = None, campus: str | None = None, offset: int = 0, limit: int = 60):
-    c = _corpus()
-    rows = c.search_programmes(q, level, campus, limit=10_000)
+    c = _catalogue()
+    rows = c.search(q, level, campus, limit=10_000)
     limit = max(1, min(limit, 500))
     return {"total": len(rows), "offset": offset, "programmes": [_light(p) for p in rows[offset:offset + limit]],
-            "campuses": sorted({p.campus for p in c.programmes if p.campus}), "source": "https://christuniversity.in/our-programmes/All/1"}
+            "campuses": c.campuses(), "source": DB_SOURCE}
+
+
+def _sections_text(rows: list[dict]) -> str | None:
+    if not rows:
+        return None
+    if len(rows) == 1:
+        return tidy(rows[0]["text"])
+    return "\n\n".join(f"#### {r['section']}\n\n{tidy(r['text'])}" for r in rows)
+
+
+def _curriculum_md(curriculum: list[dict]) -> str:
+    parts = []
+    for t in curriculum:
+        head = f"#### {t['year']} · Term {t['term']}" + (f" — {t['focus']}" if t.get("focus") else "")
+        rows = "\n".join(f"| {s['subject'].replace('|', '/')} | {s['category'] or ''} | {s['credits'] if s['credits'] is not None else ''} |" for s in t["subjects"])
+        parts.append(head + ("\n\n| Subject | Category | Credits |\n|---|---|---|\n" + rows if rows else ""))
+    return "\n\n".join(parts)
+
+
+HIGHLIGHT_TITLES = {"why_choose": "Why choose this programme", "what_you_will_learn": "What you will learn", "careers": "Career paths", "modules": "Modules"}
 
 
 @router.get("/programmes/{programme_id}")
-def programme(programme_id: str):
-    p = _corpus().by_id.get(programme_id)
-    if not p:
-        raise HTTPException(404, detail={"code": "not_found", "message": "Programme not found."})
-    return {"programme": {**p.model_dump(exclude={"tabs"}), "tabs": [{"id": t.id, "title": t.title, "text": t.text} for t in p.tabs]}}
+def programme(programme_id: int):
+    p = _catalogue().by_id.get(programme_id)
+    src = _db()
+    try:
+        rec = src.get_course(programme_id) if p else None
+        if not p or not rec:
+            raise HTTPException(404, detail={"code": "not_found", "message": "Programme not found."})
+        eligibility = _sections_text(src.get_sections(programme_id, "eligibility")[:3])
+        fees = _sections_text(src.get_sections(programme_id, "fees")[:2])
+        other = [s for s in src.get_sections(programme_id, None) if not s["section"].lower().startswith(("eligib", "fee"))]
+        highlights = src.get_highlights(programme_id)
+        curriculum = src.get_curriculum(programme_id, None)
+    except SourceUnavailable:
+        raise _unavailable()
+    tabs = []
+    if rec.get("selection_process"):
+        tabs.append({"id": "selection", "title": "Selection process", "text": tidy(rec["selection_process"])})
+    if curriculum:
+        tabs.append({"id": "curriculum", "title": "Curriculum", "text": _curriculum_md(curriculum)})
+    for kind, title in HIGHLIGHT_TITLES.items():
+        items = [h for h in highlights if h["kind"] == kind]
+        if items:
+            tabs.append({"id": kind, "title": title, "text": "\n".join(f"- **{h['title']}**" + (f": {h['text']}" if h["text"] else "") for h in items)})
+    tabs += [{"id": f"s{i}", "title": s["section"], "text": tidy(s["text"])} for i, s in enumerate(other)]
+    return {"programme": {**_light(p), "code": rec.get("code"), "term_type": rec.get("term_type"), "approved_intake": rec.get("approved_intake"),
+                          "level_label": p.level_label, "summary": rec.get("summary"), "overview": rec.get("overview"),
+                          "record_last_modified": rec.get("record_last_modified"), "eligibility": eligibility, "fees": fees, "tabs": tabs},
+            "source": DB_SOURCE}
 
 
 @router.get("/dates")
 def dates():
-    from collections import Counter
-    c = _corpus()
-    w = Counter((p.level, p.campus, p.application_open, p.application_close) for p in c.programmes if p.application_close or p.application_open)
-    return {"windows": [{"level": lv, "campus": cp, "open": o, "close": cl, "programmes": n} for (lv, cp, o, cl), n in sorted(w.items(), key=lambda x: str(x[0]))],
-            "source": "https://christuniversity.in/our-programmes/All/1"}
+    c = _catalogue()
+    return {"windows": [{"level": lv, "campus": cp, "open": o, "close": cl, "programmes": n} for (lv, cp, o, cl, n) in c.windows()], "source": DB_SOURCE,
+            "note": "Dates are the ones stored on each programme record in the database and may be out of date. Confirm with the Admissions Office."}
 
 
-TOPICS = {
-    "scholarships": ({"scholarships"}, "scholarship financial assistance freeship"),
-    "documents": ({"admissions"}, "documents required admission application certificates"),
-    "campuses": ({"campus"}, "campus facilities library sports transport"),
-    "hostel": ({"hostel"}, "hostel accommodation dining"),
-    "placements": ({"placements"}, "placement recruiters career"),
-    "international": ({"international"}, "international students nri foreign admission"),
-    "contact": ({"contact", "admissions"}, "admissions office contact phone email helpline"),
-    "about": ({"about"}, "CHRIST University accreditation ranking history"),
-    "apply": ({"admissions"}, "how to apply application process online apply last date"),
-}
+@router.get("/admission-process")
+def admission_process():
+    try:
+        rows = _db().get_admission_process(None)
+    except SourceUnavailable:
+        raise _unavailable()
+    return {"rows": [{"group": r["group"], **{k: tidy(v) for k, v in r.items() if k != "group"}} for r in rows], "source": DB_SOURCE}
 
 
-@router.get("/topic/{name}")
-def topic(name: str):
-    if name not in TOPICS:
-        raise HTTPException(404, detail={"code": "not_found", "message": "Unknown topic."})
-    cats, query = TOPICS[name]
-    hits = _corpus().search(query, k=12, categories=cats) or _corpus().search(query, k=12)
-    seen, seen_text, out = set(), set(), []
-    for h in hits:
-        excerpt = prose(h.chunk.text[:900])[:700]
-        key = " ".join(excerpt.split())[:160]
-        if h.chunk.url in seen or key in seen_text or not excerpt:   # one card per page, and no identical copies from sibling sites
-            continue
-        seen.add(h.chunk.url)
-        seen_text.add(key)
-        out.append({"title": h.chunk.title, "heading": h.chunk.heading, "url": h.chunk.url, "excerpt": excerpt, "external": h.chunk.kind == "external"})
-    extra = {}
-    if name == "apply":  # the public application portal link most programmes share
-        from collections import Counter
-        top = Counter(p.apply_url for p in _corpus().programmes if p.apply_url).most_common(1)
-        extra["apply_url"] = top[0][0] if top else None
-    return {"topic": name, "results": out, **extra}
+@router.get("/campuses")
+def campuses():
+    try:
+        rows = _db().list_campuses()
+    except SourceUnavailable:
+        raise _unavailable()
+    return {"campuses": rows, "source": DB_SOURCE}
 
 
 class EligibilityBody(BaseModel):
-    programme_id: str
+    programme_id: int
     percentage: float | None = Field(default=None, ge=0, le=100)
 
 
 @router.post("/eligibility")
 def eligibility(body: EligibilityBody):
-    p = _corpus().by_id.get(body.programme_id)
+    p = _catalogue().by_id.get(body.programme_id)
     if not p:
         raise HTTPException(404, detail={"code": "not_found", "message": "Programme not found."})
-    return {"programme": {"id": p.id, "name": p.name, "url": p.url}, "eligibility": p.eligibility, "result": hint(p.eligibility, body.percentage)}
+    try:
+        rows = _db().get_sections(body.programme_id, "eligibility")[:3]
+    except SourceUnavailable:
+        raise _unavailable()
+    raw = "\n".join(r["text"] for r in rows) or None
+    return {"programme": {"id": p.id, "name": p.name, "campus": p.campus}, "eligibility": _sections_text(rows), "result": hint(raw, body.percentage), "source": DB_SOURCE}

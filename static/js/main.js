@@ -9,9 +9,8 @@ const $ = (id) => document.getElementById(id);
 const NAV = [["/", "Home"], ["/programmes", "Explore Programmes"], ["/admissions", "Admissions"], ["/apply", "How to Apply"], ["/support", "Help"]];
 const QUICK = [
   ["/programmes", "Explore Programmes", "compass"], ["/eligibility", "Check Eligibility", "patch-check"], ["/admissions", "Application Dates", "calendar-event"],
-  ["/apply", "How to Apply", "pencil-square"], ["/fees", "Fee Structure", "cash-stack"], ["/scholarships", "Scholarships", "award"],
-  ["/documents", "Documents", "file-earmark-text"], ["/hostel", "Hostel", "house-door"], ["/campuses", "Campuses", "buildings"],
-  ["/placements", "Placements", "briefcase"], ["/international", "International", "globe2"], ["/support", "Contact Admissions", "telephone"],
+  ["/apply", "How to Apply", "pencil-square"], ["/fees", "Fee Structure", "cash-stack"], ["/campuses", "Campuses", "buildings"],
+  ["/support", "Help", "question-circle"],
 ];
 
 const ROUTES = [
@@ -22,12 +21,7 @@ const ROUTES = [
   [/^\/admissions$/, P.admissionsPage],
   [/^\/apply$/, P.applyPage],
   [/^\/fees$/, P.feesPage],
-  [/^\/scholarships$/, P.scholarshipsPage],
-  [/^\/documents$/, P.documentsPage],
-  [/^\/hostel$/, P.hostelPage],
   [/^\/campuses$/, P.campusesPage],
-  [/^\/placements$/, P.placementsPage],
-  [/^\/international$/, P.internationalPage],
   [/^\/support$/, P.supportPage],
 ];
 
@@ -107,18 +101,16 @@ function renderHeader() {
 
 function renderChrome() {
   const d = state.meta?.data, n = $("notice");
-  const when = d?.scraped_at ? new Date(d.scraped_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : "";
   if (d?.ready) {
     n.hidden = false;
     n.replaceChildren(icon("info-circle", "me-1"),
-      h("span", { class: "d-none d-md-inline" }, `Unofficial assistant. Answers come from CHRIST's public website (christuniversity.in), collected ${when}. Please confirm important details with the Admissions Office.`,
-        d.complete === false ? " Data collection is still in progress, so some information may be missing." : ""),
-      h("span", { class: "d-md-none" }, `Unofficial · data from christuniversity.in (${when})${d.complete === false ? " · still being collected" : ""}`));
+      h("span", { class: "d-none d-md-inline" }, `Unofficial assistant. Answers come from the CHRIST programme database (${d.programmes} programme listings). Application dates there can be out of date: please confirm important details with the Admissions Office.`),
+      h("span", { class: "d-md-none" }, "Unofficial · data from the CHRIST programme database"));
   } else if (d) {
     n.hidden = false;
-    n.replaceChildren(icon("exclamation-triangle", "me-1"), "Website data has not been collected yet. Run: python scrape.py");
+    n.replaceChildren(icon("exclamation-triangle", "me-1"), "The CHRIST programme database cannot be reached right now, so programme information is unavailable.");
   } else n.hidden = true;
-  $("foot").replaceChildren("Answers are based on information published on christuniversity.in · ",
+  $("foot").replaceChildren("Answers are based on the CHRIST programme database · ",
     h("button", { class: "linkbtn", type: "button", onclick: () => window.bootstrap?.Modal.getOrCreateInstance($("privacy")).show() }, "Privacy & data use"));
 }
 

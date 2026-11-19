@@ -9,11 +9,11 @@ const ACTIONS = [
   { href: "/fees", t: "Understand fees", d: "Tuition by category, registration fee and payment timing.", i: "cash-stack", tone: "warning" },
   { href: "/apply", t: "Admission help", d: "How to apply, important dates and where to start.", i: "pencil-square", tone: "info" },
 ];
-const PROMPTS = ["What are the application dates?", "What are the fees for the MBA?", "What is the eligibility for BBA?",
-  "Which documents do I need?", "Are scholarships available?", "What are the hostel facilities?",
-  "How can international students apply?", "How do I contact the Admissions Office?"];
+const PROMPTS = ["What are the fees for the MBA?", "What is the eligibility for BBA?", "Show the curriculum of the MBA",
+  "What is the selection process for the MBA?", "How do I apply?", "Which campuses does CHRIST have?",
+  "Tell me about the BCA programme", "What are the application dates?"];
 const APP_PROMPTS = ["What is the status of this application?", "What are the fees for this programme?",
-  "What documents are required?", "What should I do next?"];
+  "What is the eligibility for this programme?", "What should I do next?"];
 const STATUS_TONE = { "application incomplete": "warning", "application submitted": "primary", "under review": "info", shortlisted: "success", "application rejected": "danger" };
 
 const ERR_COPY = {
