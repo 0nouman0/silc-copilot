@@ -1,0 +1,51 @@
+# General, neutral explanations of common admission terms. These are NOT statements about CHRIST: anything specific to CHRIST (which programmes exist,
+# durations, eligibility, fees, campuses, whether lateral entry is offered) is always read from the university database and added after the definition.
+terms:
+  - {key: btech, name: "B.Tech (Bachelor of Technology)", degree: B.Tech, level: undergraduate, patterns: ['b\.?\s?tech', 'bachelor of technology'],
+     summary: "an undergraduate engineering degree that applies mathematics and science to design and build things such as software, machines, electronics and structures",
+     focus: "engineering and technology"}
+  - {key: be, name: "B.E (Bachelor of Engineering)", degree: B.E, level: undergraduate, patterns: ['b\.e\b', 'bachelor of engineering'],
+     summary: "an undergraduate engineering degree; some institutions award B.E where others award B.Tech",
+     focus: "engineering"}
+  - {key: bsc, name: "BSc (Bachelor of Science)", degree: BSc, level: undergraduate, patterns: ['b\.?\s?sc\b', 'bachelor of science'],
+     summary: "an undergraduate science degree that studies a subject such as physics, chemistry, mathematics, statistics, psychology or computer science in depth",
+     focus: "scientific and analytical subjects"}
+  - {key: bca, name: "BCA (Bachelor of Computer Applications)", degree: BCA, level: undergraduate, patterns: ['\bbca\b', 'bachelor of computer applications'],
+     summary: "an undergraduate degree focused on software development and computer applications",
+     focus: "computing and software"}
+  - {key: bcom, name: "B.Com (Bachelor of Commerce)", degree: B.Com, level: undergraduate, patterns: ['b\.?\s?com\b', 'bachelor of commerce'],
+     summary: "an undergraduate degree in commerce, covering areas such as accounting, finance, taxation and business",
+     focus: "commerce and finance"}
+  - {key: bba, name: "BBA (Bachelor of Business Administration)", degree: BBA, level: undergraduate, patterns: ['\bbba\b', 'bachelor of business administration'],
+     summary: "an undergraduate degree in business and management",
+     focus: "business and management"}
+  - {key: ba, name: "BA (Bachelor of Arts)", degree: BA, level: undergraduate, patterns: ['\bb\.a\b', 'bachelor of arts'],
+     summary: "an undergraduate degree in the humanities and social sciences, such as languages, history, economics or psychology",
+     focus: "humanities and social sciences"}
+  - {key: mtech, name: "M.Tech (Master of Technology)", degree: M.Tech, level: postgraduate, patterns: ['m\.?\s?tech', 'master of technology'],
+     summary: "a postgraduate engineering degree that builds on an undergraduate engineering degree with advanced study in a specialisation",
+     focus: "advanced engineering and research"}
+  - {key: msc, name: "MSc (Master of Science)", degree: MSc, level: postgraduate, patterns: ['m\.?\s?sc\b', 'master of science'],
+     summary: "a postgraduate science degree that goes deeper into a subject after a bachelor's degree",
+     focus: "advanced study of a scientific subject"}
+  - {key: mba, name: "MBA (Master of Business Administration)", degree: MBA, level: postgraduate, patterns: ['\bmba\b', 'master of business administration'],
+     summary: "a postgraduate management degree covering areas such as finance, marketing, operations and leadership",
+     focus: "management and leadership"}
+  - {key: mca, name: "MCA (Master of Computer Applications)", degree: MCA, level: postgraduate, patterns: ['\bmca\b', 'master of computer applications'],
+     summary: "a postgraduate degree in computer applications and software development",
+     focus: "advanced computing"}
+  - {key: phd, name: "PhD (Doctor of Philosophy)", degree: PhD, level: doctoral, patterns: ['ph\.?\s?d\b', 'doctorate', 'doctor of philosophy'],
+     summary: "a doctoral research degree in which you carry out original research and write a thesis",
+     focus: "original research"}
+  - {key: lateral_entry, name: "Lateral entry", patterns: ['lateral entry', 'lateral', 'direct (second|2nd) year'],
+     summary: "a route that lets a student join a degree programme directly in its second year instead of the first, usually after completing a qualification such as a diploma. Who can use it is decided by each university's published rules"}
+  - {key: diploma, name: "Diploma", patterns: ['\bdiploma\b'],
+     summary: "a shorter qualification, often three years after Class 10 in fields such as engineering. In some universities, diploma holders can join a degree through lateral entry"}
+  - {key: specialization, name: "Specialization", patterns: ['specialis?ation', 'specialty'],
+     summary: "a focus area within a degree, for example Artificial Intelligence and Machine Learning within a Computer Science and Engineering degree"}
+  - {key: honours, name: "Honours", patterns: ['honou?rs'],
+     summary: "a version of a degree with extra depth in the main subject, and sometimes a research component"}
+  - {key: undergraduate, name: "Undergraduate", patterns: ['undergraduate', 'under graduate'],
+     summary: "a first degree, usually taken after Class 12"}
+  - {key: postgraduate, name: "Postgraduate", patterns: ['postgraduate', 'post graduate'],
+     summary: "a master's-level degree, usually taken after a bachelor's degree"}

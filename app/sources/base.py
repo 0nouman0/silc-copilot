@@ -13,9 +13,16 @@ class SourceUnavailable(Exception):
     """The structured source cannot be reached (down, not configured, timed out). Tools relay this honestly."""
 
 
+class DataNotGranted(Exception):
+    """The source is reachable but this assistant has not been given access to that data (e.g. a table with no SELECT grant).
+    Different from an outage: tools report 'not available to me', never 'database down'."""
+
+
 class CatalogueSource(Protocol):
     name: str
 
+    def list_campus_details(self) -> list[dict[str, Any]]: ...
+    def list_facilities(self, campus_id: int | None) -> list[dict[str, Any]]: ...
     def list_catalogue(self) -> list[dict[str, Any]]: ...
     def search_courses(self, query: str, level: str | None, campus: str | None, limit: int) -> list[dict[str, Any]]: ...
     def get_course(self, course_id: int) -> dict[str, Any] | None: ...

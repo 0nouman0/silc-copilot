@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from app.sources import SourceUnavailable, set_source
+from app.sources import DataNotGranted, SourceUnavailable, set_source
 from app.sources.mysql_source import MySqlSource, _like
 from app.sources.text import html_to_text, tidy
 from app.tools.registry import ToolContext, execute
@@ -34,7 +34,7 @@ def test_section_validates_parameters():
     bad = execute("get_programme_section", json.dumps({"programme_id": 334, "section": "'; DROP TABLE courses;--"}), CTX).data
     assert bad["error"] == "invalid_arguments"
     assert execute("get_programme_section", json.dumps({"programme_id": "abc", "section": "fees"}), CTX).data["error"] == "invalid_arguments"
-    assert execute("get_programme_section", json.dumps({"programme_id": 501, "section": "fees"}), CTX).data["found"] is False
+    assert execute("get_programme_section", json.dumps({"programme_id": 501, "section": "eligibility"}), CTX).data["found"] is False
 
 
 def test_html_to_text_builds_markdown_tables_lists_and_drops_scripts():
@@ -90,12 +90,28 @@ def test_live_whole_word_search_and_sections(live):
 
 
 def test_live_account_is_really_read_only(live):
-    with pytest.raises(SourceUnavailable):
+    refused = (SourceUnavailable, DataNotGranted)
+    with pytest.raises(refused):
         live._rows("DELETE FROM courses WHERE 1=0")
-    with pytest.raises(SourceUnavailable):
+    with pytest.raises(refused):
         live._rows("SELECT COUNT(*) FROM enquiry")  # personal table: no grant
-    with pytest.raises(SourceUnavailable):
+    with pytest.raises(refused):
         live._rows("SELECT * FROM courses; DROP TABLE courses")  # multi-statements are not enabled
+
+
+def test_live_campus_details_are_real_contact_data(live):
+    rows = live.list_campus_details()
+    assert len(rows) >= 5 and all(r["name"] for r in rows)
+    kengeri = next(r for r in rows if "Kengeri" in r["name"])
+    assert kengeri["phones"] and kengeri["emails"] and kengeri["website"].startswith("http") and "\n" not in kengeri["address"]
+
+
+def test_live_facilities_work_when_granted_and_say_so_when_not(live):
+    try:
+        rows = live.list_facilities(None)
+    except DataNotGranted:
+        return   # campus_fecilities not granted yet: the app reports 'not available' (docs/agent_ro_grants.sql)
+    assert rows and all(r["text"] or r["link"] for r in rows)
 
 
 def test_live_injection_text_is_just_data(live):

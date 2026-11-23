@@ -1,0 +1,18 @@
+# REVIEWED eligibility rules. The checker gives a verdict only for a programme that has a reviewed rule here.
+# Draft rules are produced by:  python -m app.eligibility.extract   (writes config/eligibility_drafts.yaml)
+# Admissions reviews each draft, then copies it here with reviewed_by and reviewed_on filled in. An entry without both
+# fields is ignored. A programme without a reviewed rule gets the published criteria text and the admissions contact, no verdict.
+rules: []
+# - program_id: 334
+#   audience: indian             # all | indian | nri | international
+#   academic_year: '2027'
+#   min_qualification: 'UG degree'   # '10+2' | 'UG degree' | 'PG degree'
+#   min_percent: 50
+#   min_cgpa: null
+#   required_subjects: []
+#   accepted_boards: null
+#   entrance_tests: [CAT, MAT]
+#   relaxations: {SC/ST: 5}
+#   notes: ''
+#   reviewed_by: 'Admissions Office'
+#   reviewed_on: 2026-11-30

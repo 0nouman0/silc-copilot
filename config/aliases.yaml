@@ -1,0 +1,12 @@
+# Short names applicants use -> the programme's official name (prefix match on catalog names, case-insensitive).
+# Use `program_ids: [..]` instead of `name` to point at specific course ids.
+aliases:
+  - {alias: 'B.B.A', name: 'Bachelor of Business Administration'}
+  - {alias: 'BBA',   name: 'Bachelor of Business Administration'}
+  - {alias: 'MBA',   name: 'Master of Business Administration'}
+  - {alias: 'BCom',  name: 'Bachelor of Commerce'}
+  - {alias: 'MCom',  name: 'Master of Commerce'}
+  - {alias: 'BCA',   name: 'Bachelor of Computer Applications'}
+  - {alias: 'MCA',   name: 'Master of Computer Applications'}
+  - {alias: 'BTech', name: 'Bachelor of Technology'}
+  - {alias: 'LLB',   name: 'Bachelor of Laws'}

@@ -8,7 +8,7 @@ import os
 import re
 from typing import Any
 
-from .base import SourceUnavailable
+from .base import DataNotGranted, SourceUnavailable
 from .text import html_to_text
 
 ROW_CAP = 200
@@ -67,6 +67,8 @@ class MySqlSource:
                 cur.execute(sql, params)
                 return list(cur.fetchmany(cap))
         except Exception as e:  # noqa: BLE001
+            if (e.args or [None])[0] in (1142, 1143):   # ER_TABLEACCESS_DENIED / ER_COLUMNACCESS_DENIED: reachable, but not granted
+                raise DataNotGranted(f"no SELECT grant for this data ({e.args[0]})") from e
             raise SourceUnavailable(f"query failed: {type(e).__name__}") from e
         finally:
             conn.close()
@@ -189,3 +191,29 @@ class MySqlSource:
     def list_campuses(self) -> list[dict[str, Any]]:
         rows = self._rows("SELECT campus_id, campus_name FROM campus_master WHERE campus_status='Y' ORDER BY campus_id")
         return [{"campus_id": r["campus_id"], "name": r["campus_name"]} for r in rows]
+
+    def list_campus_details(self) -> list[dict[str, Any]]:
+        """Address, phones, official email, website and description of every active campus (public contact data)."""
+        rows = self._rows("SELECT campus_id, campus_name, campus_description, campus_address, campus_phone1, campus_phone2, campus_email1, campus_email2, "
+                          "campus_website FROM campus_master WHERE campus_status='Y' ORDER BY campus_id")
+        one_line = lambda v: re.sub(r"\s+", " ", (v or "")).strip()
+        uniq = lambda *vals: list(dict.fromkeys(x for x in (one_line(v) for v in vals) if x))
+        return [{"campus_id": r["campus_id"], "name": one_line(r["campus_name"]), "address": one_line(r["campus_address"]) or None,
+                 "phones": uniq(r["campus_phone1"], r["campus_phone2"]), "emails": uniq(r["campus_email1"], r["campus_email2"]),
+                 "website": one_line(r["campus_website"]) or None, "description": html_to_text(r["campus_description"]) or None} for r in rows]
+
+    def list_facilities(self, campus_id: int | None) -> list[dict[str, Any]]:
+        """Active campus facilities (hostel, library, transport...). Text entries carry their description; link entries only a
+        short blurb and the page they point to. Needs SELECT on `campus_fecilities` (see docs/agent_ro_grants.sql)."""
+        cond, params = ("AND f.campus_id=%s", (campus_id,)) if campus_id is not None else ("", ())
+        rows = self._rows("SELECT f.campus_id, cm.campus_name, f.cam_fecilities_name n, f.cam_fecilities_menutype t, f.cam_fecilities_description d, "
+                          "f.cam_fecilities_short_description s FROM campus_fecilities f JOIN campus_master cm ON cm.campus_id=f.campus_id "
+                          "WHERE f.cam_fecilities_status='Y' AND f.cam_fecilities_menutype IN ('T','U') " + cond + " ORDER BY f.campus_id, f.cam_fecilities_order, f.cam_fecilities_id", params)
+        out = []
+        for r in rows:
+            body, short = html_to_text(r["d"]), html_to_text(r["s"])
+            link = body if r["t"] == "U" and body.startswith("http") else None
+            text = short if r["t"] == "U" else (body or short)
+            if text or link:
+                out.append({"campus_id": r["campus_id"], "campus": (r["campus_name"] or "").strip(), "facility": (r["n"] or "").strip(), "text": text, "link": link})
+        return out

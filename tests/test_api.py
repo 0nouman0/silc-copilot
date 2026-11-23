@@ -1,6 +1,5 @@
 import json
 
-from app import auth
 from tests.conftest import FakeProvider, call, text
 
 
@@ -22,7 +21,7 @@ class FakeDecider:
 def test_chat_without_key_returns_clear_503_in_both_modes(client, monkeypatch):
     for mode in ("tools", "decisions"):
         monkeypatch.setenv("AGENT_MODE", mode)
-        r = chat(client)
+        r = chat(client, "tell me about the mba")          # a greeting is answered in code, so ask something that needs the model
         assert r.status_code == 503 and r.json()["error"]["code"] == "not_configured"
 
 
@@ -51,29 +50,13 @@ def test_meta_and_pages_report_a_database_outage(client):
         assert r.status_code == 503 and r.json()["error"]["code"] == "data_unavailable", path
 
 
-# ---- auth + applications
-def test_applications_require_authentication(client):
-    assert client.get("/api/applications").status_code == 401
-
-
-def test_user_with_three_applications(client, login):
-    login("demo-applicant-1")
-    j = client.get("/api/applications").json()
-    assert j["count"] == 3 and j["demo"] is True
-
-
-def test_forged_and_tampered_cookies_rejected(client):
-    client.cookies.set(auth.COOKIE, "demo-applicant-1")
-    assert client.get("/api/applications").status_code == 401
-    client.cookies.set(auth.COOKIE, "demo-applicant-1.deadbeef")
-    assert client.get("/api/applications").status_code == 401
-
-
-def test_unknown_demo_user_and_production_login_rejected(client, monkeypatch):
-    assert client.post("/api/session/demo-login", json={"user_id": "admin"}).status_code == 403
-    monkeypatch.setenv("INTEGRATION_MODE", "production")
-    monkeypatch.setenv("SESSION_SECRET", "s")
-    assert client.post("/api/session/demo-login", json={"user_id": "demo-applicant-1"}).status_code == 403
+# ---- no accounts, no demo data
+def test_account_and_application_endpoints_are_gone(client):
+    for method, path in [("get", "/api/session"), ("post", "/api/session/demo-login"), ("post", "/api/session/logout"), ("get", "/api/applications")]:
+        r = getattr(client, method)(path)
+        assert r.status_code in (404, 405), path
+    j = client.get("/api/meta").json()
+    assert "demo_login" not in j and "mode" not in j
 
 
 # ---- chat end-to-end
@@ -81,37 +64,27 @@ def test_decisions_mode_chat_returns_grounded_reply_with_links(client, monkeypat
     monkeypatch.setenv("AGENT_MODE", "decisions")
     monkeypatch.setattr("app.routers.api.get_decider", lambda: FakeDecider("programme_fees"))
     j = chat(client, "mba fees").json()
-    assert "5,70,000" in j["reply"] and j["intent"] == "programme_fees" and j["demo"] is False
+    assert "not connected" in j["reply"] and "5,70,000" not in j["reply"] and j["intent"] == "programme_fees" and "demo" not in j and "cards" in j
     assert j["sources"][0]["url"] is None and "CHRIST programme database" in j["sources"][0]["title"] and j["follow_ups"]
 
 
 def test_tools_mode_runs_tool_loop(client, monkeypatch):
     monkeypatch.setenv("AGENT_MODE", "tools")
-    fake = FakeProvider([call("get_fee_structure", programme_id=334), text("Fees are in the table.")])
-    monkeypatch.setattr("app.routers.api.get_llm_provider", lambda: fake)
+    fake = FakeProvider([call("get_fees", programme_id=334), text("Fees are not available right now.")])
+    monkeypatch.setattr("app.routers.api.get_llm_provider", lambda agent=None: fake)
     j = chat(client, "MBA fees?").json()
-    assert j["tools_used"] == ["get_fee_structure"] and "Fees" in j["sources"][0]["title"]
-    assert any(m.role == "tool" and "5,70,000" in m.content for m in fake.seen[1][0])
+    assert j["tools_used"] == ["get_fees"] and "CHRIST programme database" in j["sources"][0]["title"] and j["skill"] == "fees_deadlines"
+    assert any(m.role == "tool" and '"available": false' in m.content and "5,70,000" not in m.content for m in fake.seen[1][0])
     assert "CHRIST" in fake.seen[0][0][0].content and "ONLY about" in fake.seen[0][0][0].content
 
 
-def test_tools_mode_anonymous_not_offered_applicant_tools(client, monkeypatch):
+def test_personal_application_questions_never_reach_the_model(client, monkeypatch):
+    """The pre-router sends 'my application' cases to a human in code: the model is not called and no tool can read an application."""
     monkeypatch.setenv("AGENT_MODE", "tools")
-    fake = FakeProvider([text("Please sign in.")])
-    monkeypatch.setattr("app.routers.api.get_llm_provider", lambda: fake)
-    chat(client, "status of my application?")
-    assert "get_application_status" not in {t.name for t in fake.seen[0][1]}
-
-
-def test_active_application_verified_and_cross_user_ignored(client, login, monkeypatch):
-    monkeypatch.setenv("AGENT_MODE", "decisions")
-    monkeypatch.setattr("app.routers.api.get_decider", lambda: FakeDecider("my_application_status"))
-    login("demo-applicant-1")
-    ok = chat(client, "status?", active_application_id="DEMO-APP-0001").json()
-    assert ok["active_application_id"] == "DEMO-APP-0001" and "Under Review" in ok["reply"]
-    login("demo-applicant-2")
-    bad = chat(client, "status?", active_application_id="DEMO-APP-0001").json()
-    assert bad["active_application_id"] is None and "Under Review" not in bad["reply"]
+    fake = FakeProvider([text("should never be used")])
+    monkeypatch.setattr("app.routers.api.get_llm_provider", lambda agent=None: fake)
+    j = chat(client, "status of my application?").json()
+    assert fake.seen == [] and j["skill"] == "escalate" and "can't see" in j["reply"] and j["intent"] == "escalate"
 
 
 def test_provider_errors_surface_cleanly(client, monkeypatch):
@@ -125,7 +98,7 @@ def test_provider_errors_surface_cleanly(client, monkeypatch):
 
     monkeypatch.setenv("AGENT_MODE", "decisions")
     monkeypatch.setattr("app.routers.api.get_decider", lambda: Boom())
-    r = chat(client)
+    r = chat(client, "tell me about the mba")
     assert r.status_code == 429 and r.json()["error"]["code"] == "rate_limited"
 
 
@@ -140,7 +113,7 @@ def test_programme_list_filters_and_pagination(client):
 
 def test_programme_detail_and_not_found(client):
     p = client.get("/api/programmes/334").json()["programme"]
-    assert "5,70,000" in p["fees"] and "50% marks" in p["eligibility"] and p["duration_years"] == 2 and p["department"] == "Business and Management"
+    assert p["fees"] is None and "live admissions data" in p["fees_note"] and "approved_intake" not in p and "50% marks" in p["eligibility"] and p["duration_years"] == 2 and p["department"] == "Business and Management"
     titles = [t["title"] for t in p["tabs"]]
     assert "Curriculum" in titles and "Career paths" in titles and "Placements" in titles and "url" not in p
     assert "Managerial Economics" in next(t for t in p["tabs"] if t["title"] == "Curriculum")["text"]
@@ -151,7 +124,7 @@ def test_programme_detail_and_not_found(client):
 
 def test_dates_admission_process_campuses_and_eligibility_endpoints(client):
     d = client.get("/api/dates").json()
-    assert d["windows"] and "out of date" in d["note"]
+    assert d["windows"] == [] and "live admissions data" in d["note"]
     ap = client.get("/api/admission-process").json()["rows"]
     assert {r["group"] for r in ap} == {"ug comm", "pg commer"} and "apply online" in ap[0]["how_to_apply"]
     assert [c["name"] for c in client.get("/api/campuses").json()["campuses"]] == ["Bangalore Central Campus", "Bangalore Kengeri Campus"]

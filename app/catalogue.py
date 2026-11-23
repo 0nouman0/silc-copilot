@@ -42,7 +42,11 @@ def stem(t: str) -> str:
     return t
 
 
+_BE = re.compile(r"\bB\.E\b\.?|\bb\.e\b\.?|\bBE\b")
+
+
 def tokenize(text: str) -> list[str]:
+    text = _BE.sub(" engineering ", text)   # "B.E" / "BE" is the degree, not the stop word "be"
     text = re.sub(r"(?<=\b[a-z])\.(?=[a-z]\b)", "", text.lower())  # B.Com -> bcom
     text = text.replace(".", "")
     return [stem(t) for t in re.findall(r"[a-z0-9]+", text) if t not in STOP and len(t) > 1]
@@ -53,6 +57,54 @@ ABBR_TOKENS = {k: set(tokenize(v)) for k, v in ABBR.items()}
 QUESTION_WORDS = {stem(w) for w in ("application", "applications", "apply", "applying", "admission", "date", "deadline", "fee", "eligibility", "eligible",
                                     "process", "selection", "curriculum", "syllabus", "last", "open", "close", "status", "detail", "information", "info",
                                     "scholarship", "placement", "hostel", "campus", "criteria", "requirement", "available", "offer", "programme", "course")}
+
+
+# --- recommendation vocabulary --------------------------------------------------------------------------------------------
+# Words people use for a field of interest -> words that appear in programme / department names.
+_INTEREST = {
+    "coding": "computer science data", "programming": "computer science", "software": "computer science engineering", "tech": "computer technology engineering",
+    "technology": "computer technology engineering", "it": "computer science", "ai": "artificial intelligence data science", "ml": "data science",
+    "computers": "computer science", "robot": "engineering electronics", "app": "computer science", "cyber": "computer science", "analytics": "data statistics business",
+    "money": "finance commerce economics", "finance": "finance commerce", "banking": "finance commerce", "accounts": "commerce accounting", "accounting": "commerce accounting",
+    "business": "business management", "startup": "business management entrepreneurship", "entrepreneur": "business management", "marketing": "business management marketing",
+    "management": "business management", "hr": "business management human resource", "law": "law", "legal": "law", "lawyer": "law", "advocate": "law", "court": "law",
+    "teaching": "education", "teacher": "education", "school": "education", "mind": "psychology", "counselling": "psychology", "counseling": "psychology",
+    "therapy": "psychology", "behaviour": "psychology", "media": "media communication journalism", "journalism": "media journalism", "film": "media communication film",
+    "writing": "english communication", "literature": "english", "language": "english", "design": "design arts", "art": "arts performing", "music": "music performing arts",
+    "theatre": "theatre performing arts", "dance": "performing arts", "biology": "life sciences biotechnology", "bio": "life sciences biotechnology",
+    "biotech": "biotechnology life sciences", "environment": "environmental science life sciences", "chemistry": "chemistry", "physics": "physics", "maths": "mathematics statistics",
+    "math": "mathematics statistics", "statistics": "statistics data", "economics": "economics", "politics": "political science international studies",
+    "history": "history international studies", "government": "political science public policy", "society": "sociology social work", "ngo": "social work",
+    "hotel": "hotel management tourism hospitality", "hospitality": "hotel tourism hospitality", "tourism": "tourism management", "travel": "tourism management",
+    "architecture": "architecture", "building": "civil engineering architecture", "mechanical": "mechanical engineering", "cars": "mechanical automobile engineering",
+    "electronics": "electronics engineering", "electrical": "electrical engineering", "civil": "civil engineering", "engineering": "engineering",
+    "philosophy": "philosophy theology", "research": "research doctor philosophy",
+    "aiml": "artificial intelligence machine learning data science computer", "genai": "artificial intelligence data science computer",
+    "iot": "computer electronics engineering", "datascience": "data science statistics computer", "mechatronics": "mechanical electronics engineering",
+}
+INTEREST_SYN = {stem(k): sorted(set(tokenize(v))) for k, v in _INTEREST.items()}
+# Chatter around an interest ("I want to study ...") that must not score programmes.
+RECO_NOISE = {stem(w) for w in ("interested", "interest", "like", "love", "enjoy", "want", "study", "studying", "learn", "good", "best", "suggest", "recommend",
+                                "recommendation", "career", "degree", "bachelor", "master", "undergraduate", "postgraduate", "doctoral", "ug", "pg", "phd",
+                                "help", "choose", "choice", "option", "suit", "fit", "right", "confused", "sure", "think", "field", "area", "subject", "passion",
+                                "future", "job", "work", "after", "12th", "10th", "graduation", "plus", "stream", "also", "something", "anything", "else",
+                                "different", "more", "show", "list", "different", "campus", "kengeri", "pune", "delhi", "bangalore", "bengaluru", "central")}
+
+
+def detect_level(text: str) -> str | None:
+    """Level mentioned in free text (an applicant saying 'after 12th' means undergraduate)."""
+    t = text.lower()
+    if re.search(r"\b(phd|ph\.d|doctoral|doctorate)\b", t):
+        return "doctoral"
+    if re.search(r"\bb\.e\b|(?-i:\bBE\b)|\bb\.?\s?(tech|sc|com|ba|bca|des|arch)\b", text, re.I) and not re.search(r"\bm\.?\s?(tech|sc|com|ba|ca)\b|\bmba\b|\bmca\b", t):
+        return "undergraduate"           # the degree name itself says the level (B.E, B.Tech, B.Sc, B.Com...)
+    if re.search(r"\bm\.e\b|\bm\.?\s?(tech|sc|com)\b|\bmba\b|\bmca\b", text, re.I):
+        return "postgraduate"
+    if re.search(r"\b(pg|postgraduate|post[- ]graduate|masters?|after (my )?(graduation|degree|bachelor'?s?|b\.?(tech|com|sc|a|ba)))\b", t):
+        return "postgraduate"
+    if re.search(r"\b(ug|undergraduate|under[- ]graduate|bachelors?|after (my )?(12th|10th|\+2|plus two|class (12|xii)|school|puc|intermediate))\b", t):
+        return "undergraduate"
+    return None
 
 
 def window_status(open_: str | None, close: str | None) -> str:
@@ -121,6 +173,60 @@ class Catalogue:
         self.name_idf = {t: math.log(1 + n / c) for t, c in df.items()}
         # programme identity ignoring a name's own abbreviation: "Master of Business Administration" == "... (MBA)"
         self.name_key = {pid: frozenset(t for t in nt if not (t in ABBR_TOKENS and ABBR_TOKENS[t] <= nt)) for pid, nt in self.name_tokens.items()}
+        self.dept_tokens = {p.id: set(tokenize(p.department or "")) for p in self.programmes}
+        ddf: Counter = Counter()
+        for toks in self.dept_tokens.values():
+            ddf.update(toks)
+        self.dept_idf = {t: math.log(1 + n / c) for t, c in ddf.items()}
+
+    # ------------------------------------------------------------------ recommendations
+    def departments(self, limit: int = 8) -> list[str]:
+        """Department names by number of programmes (case-folded duplicates merged), for 'what are you interested in?' prompts."""
+        counts: Counter = Counter()
+        label: dict[str, str] = {}
+        for p in self.programmes:
+            if p.department:
+                k = " ".join(p.department.lower().split())
+                counts[k] += 1
+                label.setdefault(k, p.department if not p.department.isupper() else p.department.title())
+        return [label[k] for k, _ in counts.most_common(limit)]
+
+    def interest_tokens(self, text: str) -> list[str]:
+        """What the applicant is interested in, as tokens that can match programme/department names (synonyms expanded)."""
+        out: list[str] = []
+        for t in tokenize(text):
+            if t in RECO_NOISE or t in QUESTION_WORDS:
+                continue
+            out.append(t)
+            out.extend(INTEREST_SYN.get(t, []))
+        return list(dict.fromkeys(out))
+
+    def recommend(self, text: str, level: str | None = None, campus: str | None = None, limit: int = 5) -> list[dict[str, Any]]:
+        """Programmes whose name or department matches the applicant's interests, best first, one entry per distinct programme
+        (its campuses listed together). Pure matching on the database's own names: it never judges the applicant."""
+        toks = self.interest_tokens(text)
+        if not toks:
+            return []
+        groups: dict[frozenset, list[tuple[float, Programme, list[str]]]] = {}
+        for p in self.programmes:
+            if level and p.level != level:
+                continue
+            if campus and not (p.campus and campus.lower() in p.campus.lower()):
+                continue
+            nt, dt = self.name_tokens[p.id], self.dept_tokens[p.id]
+            hit_name = [t for t in toks if t in nt]
+            hit_dept = [t for t in toks if t in dt and t not in nt]
+            score = 2.0 * sum(self.name_idf.get(t, 0) for t in hit_name) + sum(self.dept_idf.get(t, 0) for t in hit_dept)
+            if score > 0:
+                groups.setdefault(self.name_key[p.id], []).append((score, p, list(dict.fromkeys(hit_name + hit_dept))))
+        ranked = []
+        for rows in groups.values():
+            rows.sort(key=lambda r: (-r[0], "central" not in (r[1].campus or "").lower(), r[1].id))
+            score, best, why = rows[0]
+            ranked.append({"programme": best, "score": round(score, 3), "matched": why, "campuses": sorted({r[1].campus for r in rows if r[1].campus}),
+                           "listing_ids": [r[1].id for r in rows]})
+        ranked.sort(key=lambda r: (-r["score"], len(self.name_tokens[r["programme"].id]), r["programme"].name))
+        return ranked[:limit]
 
     # ------------------------------------------------------------------ browse
     def campuses(self) -> list[str]:
@@ -230,7 +336,7 @@ class Catalogue:
 
 
 # ---------------------------------------------------------------------- cached access
-_cache: dict[str, Any] = {"src": None, "at": 0.0, "cat": None}
+_cache: dict[str, Any] = {"src": None, "at": 0.0, "cat": None, "ver": None}
 
 
 def get_catalogue() -> Catalogue:
@@ -238,11 +344,12 @@ def get_catalogue() -> Catalogue:
     if src is None:
         raise SourceUnavailable("no catalogue source configured")
     c = _cache
-    if c["cat"] is None or c["src"] is not src or time.monotonic() - c["at"] > TTL_S:
+    ver = getattr(src, "version", None)   # the in-memory catalog source bumps this on every swap
+    if c["cat"] is None or c["src"] is not src or c["ver"] != ver or time.monotonic() - c["at"] > TTL_S:
         cat = Catalogue(src.list_catalogue())
-        c.update(src=src, at=time.monotonic(), cat=cat)
+        c.update(src=src, at=time.monotonic(), cat=cat, ver=ver)
     return c["cat"]
 
 
 def reset_catalogue() -> None:
-    _cache.update(src=None, at=0.0, cat=None)
+    _cache.update(src=None, at=0.0, cat=None, ver=None)

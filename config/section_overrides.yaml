@@ -1,0 +1,5 @@
+# Manual fixes applied after classification (keys are rel_link_id from course_related_links).
+#   current: treat as current although rel_link_expire_date is in the past
+#   hide:    never show
+current: []
+hide: []

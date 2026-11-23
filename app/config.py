@@ -1,9 +1,4 @@
-"""Central server-side configuration. Secrets come only from environment variables.
-
-INTEGRATION_MODE
-  demo        sample data + mock applicant API, clearly labelled everywhere.
-  production  requires real adapters; NEVER silently falls back to demo data.
-"""
+"""Central server-side configuration. Secrets come only from environment variables."""
 from __future__ import annotations
 
 import os
@@ -22,10 +17,6 @@ _PROVIDER_DEFAULTS = {
 }
 
 
-def integration_mode() -> str:
-    return "production" if os.getenv("INTEGRATION_MODE", "demo").lower() == "production" else "demo"
-
-
 @dataclass(frozen=True)
 class LlmConfig:
     provider: str
@@ -35,15 +26,18 @@ class LlmConfig:
     timeout_s: float
 
 
-def llm_config() -> LlmConfig:
+def llm_config(agent: str | None = None) -> LlmConfig:
+    """`agent` ("info" / "recommend") may use its own model: LLM_MODEL_INFO / LLM_MODEL_RECOMMEND, falling back to LLM_MODEL.
+    The recommender benefits from a stronger chat model than the fact-fetching agent."""
     provider = os.getenv("LLM_PROVIDER", "openrouter").lower()
     d = _PROVIDER_DEFAULTS.get(provider, {"base_url": "", "model": ""})
+    per_agent = os.getenv(f"LLM_MODEL_{agent.upper()}") if agent else None
     return LlmConfig(
         provider=provider,
         api_key=os.getenv("LLM_API_KEY") or None,
         # Free-tier models change often and not all support tool calling.
-        # Override with LLM_MODEL and verify tool-calling support.
-        model=os.getenv("LLM_MODEL") or d["model"],
+        # Override with LLM_MODEL (or LLM_MODEL_INFO / LLM_MODEL_RECOMMEND) and verify tool-calling support.
+        model=per_agent or os.getenv("LLM_MODEL") or d["model"],
         base_url=os.getenv("LLM_BASE_URL") or d["base_url"],
         timeout_s=float(os.getenv("LLM_TIMEOUT_S", "45")),
     )
@@ -60,15 +54,6 @@ def agent_mode() -> str:
 
 def decisions_url() -> str:
     return os.getenv("LLM_DECISIONS_URL", "https://openrouter.ai/api/alpha/decisions")
-
-
-def session_secret() -> str:
-    secret = os.getenv("SESSION_SECRET")
-    if secret:
-        return secret
-    if integration_mode() == "production":
-        raise RuntimeError("SESSION_SECRET must be set in production mode.")
-    return "dev-only-insecure-session-secret"  # never used in production mode
 
 
 DEFAULT_COMPOSE_MODELS = ("nvidia/nemotron-3.5-lightning:free,inclusionai/ling-3.2-flash:free,"

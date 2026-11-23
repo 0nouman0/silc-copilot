@@ -1,0 +1,12 @@
+# Precedence per field. ERP-only fields are NOT connected yet (the aggregation layer is a later phase):
+# until then the live tools return available=false, and the assistant says so and gives the admissions contact.
+fields:
+  fees:                {primary: erp, fallback: stored_fee_structure_with_year_and_validity_note, never_use: [brochure fee pages]}   # ERP not connected: the stored structure is used
+  application_dates:   {primary: erp, fallback: none, never_use: [courses.course_appl_*, important dates sections]}
+  entrance_test_dates: {primary: erp, fallback: none}
+  seats_intake:        {primary: erp, fallback: none, never_use: [courses.intApprovedIntake]}
+  hostel_vacancy:      {primary: erp, fallback: none}
+  application_status:  {primary: erp_authenticated, fallback: escalate}
+  hostel_descriptions: {primary: catalog_topics, fallback: brochure}
+  eligibility_verdict: {primary: reviewed_rule_checker, fallback: explain_text_only}
+  programme_content:   {primary: catalog_sections, fallback: brochure}

@@ -1,0 +1,33 @@
+# Which "R" (structure / outcomes / process) section titles are loaded, and what kind they become.
+# First matching rule wins. A title that matches an `exclude` pattern, or no rule at all, is not loaded.
+# Fees and important-dates sections are never loaded (those facts come only from the ERP).
+exclude:
+  - '\bfees?\b'
+  - 'important dates?'
+  - '\bdates?\b'
+  - 'photo gallery|faculty|parent|alumni|best practice|club|association|achievement|award|conference|workshop|newsletter|collaboration'
+  - 'mou|sdg|nmcc|editorial|constitution|extension activit|extra curricular|mentor|pedagogy|value added|projects?$|academia|industry'
+  - 'internship|department (overview|vision)|guidelines$|download'
+rules:
+  - {pattern: 'cancellation',                     kind: cancellation_policy}
+  - {pattern: 'faq',                              kind: faq}
+  - {pattern: 'entrance|audition',                kind: entrance_test}
+  - {pattern: 'selection',                        kind: selection_process}
+  - {pattern: 'application process',              kind: application_process}
+  - {pattern: 'admission process',                kind: admission_process}
+  - {pattern: 'admission quer',                   kind: admission_queries}
+  - {pattern: '\bnri\b',                          kind: nri}
+  - {pattern: 'international',                    kind: international}
+  - {pattern: 'scholarship',                      kind: scholarship}
+  - {pattern: 'placement|career (prospect|opportunit)', kind: placement}
+  - {pattern: 'syllabus',                         kind: syllabus}
+  - {pattern: 'structure|summary of (the )?prog', kind: programme_structure}
+  - {pattern: 'outcome',                          kind: outcomes}
+  - {pattern: 'objective|learning goals|design|relevance|salient|highlights?', kind: objectives}
+  - {pattern: 'electives?|academic experience|miscellaneous', kind: misc}
+
+# Titles of shared (course_common_links) blocks that are never loaded.
+shared_exclude:
+  - 'important dates?'
+  - '\bfees?\b'
+  - 'odd|even semester|summer|value added|open elective'

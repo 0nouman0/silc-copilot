@@ -1,15 +1,12 @@
 import httpx
 import pytest
 
-from app.agent.decision_engine import LOW_CONFIDENCE, SIGN_IN, run_decision_agent
-from app.applicants.adapter import DemoApplicantApi
+from app.agent.decision_engine import LOW_CONFIDENCE, run_decision_agent
 from app.config import agent_mode
 from app.llm import LLMError
 from app.llm.decisions import DecisionsClient
 from app.sources import set_source
 from tests.conftest import CLOSE, OPEN, FakeSource, fmt
-
-API = DemoApplicantApi()
 
 
 def ans(intent, level="any", category="unspecified", conf=0.95):
@@ -32,18 +29,19 @@ def H(*pairs):
     return [{"role": r, "content": c} for r, c in pairs]
 
 
-async def run(intent, text="q", user_id=None, active=None, history=None, **kw):
+async def run(intent, text="q", history=None, **kw):
     d = FakeDecider(ans(intent, **kw))
-    r = await run_decision_agent(d, history or H(("user", text)), user_id=user_id, active_application=active)
+    r = await run_decision_agent(d, history or H(("user", text)))
     return r, d
 
 
 # ---------------------------------------------------------------- grounded answers from the database
-async def test_fees_are_verbatim_database_text_with_a_database_source():
+async def test_fees_are_never_quoted_from_website_text_only_live_data_status_and_contact():
     r, _ = await run("programme_fees", "what are the mba fees")
-    assert "5,70,000 INR" in r.reply and "Master of Business Administration (MBA)" in r.reply and "| Year | Karnataka | NRI |" in r.reply
-    assert "CHRIST programme database" in r.sources[0].title and r.sources[0].url is None and r.demo is False
-    assert "get_fee_structure" in r.tools_used and r.intent == "programme_fees"
+    assert "5,70,000" not in r.reply and "| Year | Karnataka | NRI |" not in r.reply and "Master of Business Administration (MBA)" in r.reply
+    assert "not connected" in r.reply and "won't guess" in r.reply and "Admissions Office" in r.reply
+    assert "CHRIST programme database" in r.sources[0].title and r.sources[0].url is None
+    assert "get_fees" in r.tools_used and r.intent == "programme_fees"
 
 
 async def test_no_scraped_data_tools_are_ever_used():
@@ -71,36 +69,35 @@ async def test_ambiguous_mention_lists_options_and_offers_chips():
 
 async def test_no_programme_asks_which_one():
     r, _ = await run("programme_fees", "what are the fees")
-    assert "Which CHRIST programme" in r.reply and "get_fee_structure" not in r.tools_used
+    assert "Which CHRIST programme" in r.reply and "get_fees" not in r.tools_used
 
 
 async def test_missing_fee_record_not_invented():
     r, _ = await run("programme_fees", "phd management fees")
-    assert "isn't in the CHRIST programme database" in r.reply or "not available in the CHRIST programme database" in r.reply
-    assert "INR" not in r.reply
+    assert "not connected" in r.reply and "INR" not in r.reply
 
 
 async def test_application_fee_extracts_only_relevant_lines():
     r, _ = await run("application_fee", "mba application fee")
-    assert "Admission Registration Fee: INR 8000/-" in r.reply and "5,70,000" not in r.reply
+    assert "8000" not in r.reply and "5,70,000" not in r.reply and "not connected" in r.reply
 
 
 async def test_history_resolves_follow_up_question():
     hist = H(("user", "tell me about the MBA"), ("assistant", "…"), ("user", "what about the fees?"))
     r, _ = await run("programme_fees", history=hist)
-    assert "5,70,000" in r.reply
+    assert "Master of Business Administration (MBA)" in r.reply and "not connected" in r.reply
 
 
 async def test_generic_application_dates_question_does_not_pick_a_programme():
     """Regression: 'application' used to match 'Computer Applications' and the engine asked which MCA the user meant."""
     r, _ = await run("dates", "what are the application dates?")
-    assert "Several CHRIST programmes" not in r.reply and "Application windows recorded in the database" in r.reply
+    assert "Several CHRIST programmes" not in r.reply and "live admissions system" in r.reply and fmt(CLOSE) not in r.reply
 
 
 async def test_programme_details_and_curriculum():
     d, _ = await run("programme_details", "tell me about mba")
-    assert "Bangalore Central Campus" in d.reply and "2 years" in d.reply and "Business and Management" in d.reply and fmt(CLOSE) in d.reply
-    assert "may be out of date" in d.reply
+    assert "Bangalore Central Campus" in d.reply and "2 years" in d.reply and "Business and Management" in d.reply and fmt(CLOSE) not in d.reply
+    assert "Approved intake" not in d.reply and "live admissions data" in d.reply
     c, _ = await run("curriculum", "mba curriculum")
     assert "Managerial Economics" in c.reply and "| Subject | Category | Credits |" in c.reply and "Strategy" not in c.reply  # first year only
     c2, _ = await run("curriculum", "mba year 2 curriculum")
@@ -128,11 +125,11 @@ async def test_bare_percentage_after_bot_asked():
 
 async def test_dates_windows_and_programme_specific():
     g, _ = await run("dates", "what are the application dates")
-    assert "Bangalore Central Campus" in g.reply and fmt(CLOSE) in g.reply and "Open" in g.reply and "may be out of date" in g.reply
+    assert "not connected" in g.reply and fmt(CLOSE) not in g.reply and "Admissions" in g.reply
     p, _ = await run("dates", "bba application dates")
-    assert "Application dates — Bachelor of Business Administration (BBA)" in p.reply and fmt(OPEN) in p.reply and "Kengeri" in p.reply
+    assert "Application dates — Bachelor of Business Administration (BBA)" in p.reply and fmt(OPEN) not in p.reply and "Kengeri" in p.reply
     none, _ = await run("dates", "phd management application dates")
-    assert "Not published" in none.reply
+    assert "not connected" in none.reply and "Not published" not in none.reply
 
 
 async def test_all_closed_windows_are_reported_honestly(monkeypatch):
@@ -144,7 +141,7 @@ async def test_all_closed_windows_are_reported_honestly(monkeypatch):
     set_source(AllClosed())
     reset_catalogue()
     r, _ = await run("dates", "what are the application dates")
-    assert "No open application window is recorded" in r.reply and "1 June 2019" in r.reply and "Admissions Office" in r.reply
+    assert "1 June 2019" not in r.reply and "live admissions system" in r.reply and "not connected" in r.reply   # dead website dates are never shown
 
 
 async def test_selection_process_uses_programme_section_and_admits_gaps():
@@ -160,17 +157,15 @@ async def test_application_help_uses_admission_process_text_for_the_level():
     assert "get_admission_process" in ug.tools_used
 
 
-async def test_placements_scholarships_campuses_use_database_or_say_so():
+async def test_placements_and_scholarships_use_database_or_say_so():
     p, _ = await run("placements", "mba placements")
     assert "Top recruiters visit the campus" in p.reply and "Business Analyst" in p.reply
-    s, _ = await run("scholarships", "mba scholarship")
-    assert "isn't in the CHRIST programme database" in s.reply
-    c, _ = await run("campus", "campuses")
-    assert "Bangalore Kengeri Campus" in c.reply and "aren't stored" in c.reply
+    sc, _ = await run("scholarships", "mba scholarship")
+    assert "isn't in the CHRIST programme database" in sc.reply
 
 
 async def test_topics_the_database_does_not_hold_are_stated_plainly():
-    for intent, needle in [("hostel", "Hostel"), ("documents", "required-documents"), ("about_university", "General information"), ("contact_support", "email addresses")]:
+    for intent, needle in [("documents", "required-documents"), ("about_university", "General information"), ("international", "international and NRI")]:
         r, _ = await run(intent, "q")
         assert needle in r.reply and "isn't in the CHRIST programme database" in r.reply and not r.sources, intent
 
@@ -208,8 +203,8 @@ async def test_database_outage_is_reported_not_guessed():
 async def test_off_topic_guarantee_other_person_greeting():
     assert "only help with admissions" in (await run("off_topic", "weather"))[0].reply
     assert "can't guarantee" in (await run("guarantee_request", "guarantee me a seat"))[0].reply
-    assert "can't share another person" in (await run("other_person_data", "status of Rahul"))[0].reply
-    assert "unofficial" in (await run("greeting", "hi"))[0].reply
+    assert "can't share anyone's application" in (await run("other_person_data", "status of Rahul"))[0].reply
+    assert "Welcome to CHRIST University" in (await run("greeting", "hi"))[0].reply
 
 
 async def test_unknown_intent_from_model_becomes_off_topic():
@@ -228,34 +223,57 @@ async def test_user_text_only_reaches_decider_as_state():
     assert "ADMITTED" not in r.reply and evil in d.calls[0][1] or evil in d.calls[0][0][2]
 
 
-# ---------------------------------------------------------------- applicant flows (mock API, ownership enforced)
-async def test_status_requires_sign_in():
-    r, _ = await run("my_application_status")
-    assert r.reply == SIGN_IN
+# ---------------------------------------------------------------- real campus data, no applicant records
+async def test_the_decider_fallback_greeting_is_natural_not_the_welcome_message_and_makes_no_database_call(monkeypatch):
+    import app.agent.decision_engine as de
+    monkeypatch.setattr(de, "get_catalogue", lambda: (_ for _ in ()).throw(AssertionError("a greeting must not touch the database")))
+    r, _ = await run("greeting", "hello")
+    assert r.reply == "Hello! Welcome to CHRIST University. How can I assist you today?" and "enrol" not in r.reply
+    hist = H(("user", "hello"), ("assistant", r.reply), ("user", "hi"))
+    r2, _ = await run("greeting", history=hist)
+    assert r2.reply == "Hi again! What would you like to explore today?"
 
 
-async def test_status_exact_and_never_claims_selection():
-    app = API.get_application("demo-applicant-1", "DEMO-APP-0001")
-    r, _ = await run("my_application_status", user_id="demo-applicant-1", active=app)
-    assert "**Status:** Under Review" in r.reply and "does not mean you have been selected" in r.reply and r.demo is True
+async def test_contact_details_are_the_real_campus_records():
+    r, _ = await run("contact_support", "how can I contact admissions")
+    assert "080 40129100" in r.reply and "mail@christuniversity.in" in r.reply and "080 62689800" in r.reply and "Kanmanike" in r.reply
+    assert r.tools_used == ["get_campus_details"] and "CHRIST programme database" in r.sources[0].title
+    one, _ = await run("contact_support", "phone number of the kengeri campus")
+    assert "080 62689800" in one.reply and "080 40129100" not in one.reply and "Hosur Road" not in one.reply
 
 
-async def test_explicit_offer_reported_only_when_returned():
-    app = API.get_application("demo-applicant-2", "DEMO-APP-0101")
-    r, _ = await run("my_application_status", user_id="demo-applicant-2", active=app)
-    assert "Offer Released" in r.reply
+async def test_hostel_facilities_and_library_come_from_the_database():
+    h, _ = await run("hostel", "hostel at the central campus")
+    assert "Hostel rooms are available for outstation students" in h.reply and "https://christuniversity.in/hostel" in h.reply
+    none, _ = await run("hostel", "hostel at the kengeri campus")      # no hostel recorded for Kengeri: say so, never invent
+    assert "aren't available to me right now" in none.reply and "080 40129100" in none.reply and "Hostel rooms" not in none.reply
+    lib, _ = await run("campus", "what about the library at kengeri")
+    assert "up-to-date library" in lib.reply and "transport" not in lib.reply.lower()
 
 
-async def test_my_applications_lists_three_and_requires_sign_in():
-    r, _ = await run("my_applications", user_id="demo-applicant-1")
-    assert "3 applications" in r.reply and "DEMO-APP-0003" in r.reply
-    assert (await run("my_applications"))[0].reply == SIGN_IN
+async def test_facilities_not_granted_degrade_to_an_honest_message(monkeypatch):
+    from app.catalogue import reset_catalogue
+    set_source(FakeSource(facilities_granted=False))
+    reset_catalogue()
+    h, _ = await run("hostel", "hostel facilities")
+    assert "aren't available to me right now" in h.reply and "mail@christuniversity.in" in h.reply
+    c, _ = await run("campus", "what are the campus facilities")
+    assert "Kanmanike" in c.reply and "has not been made available" in c.reply          # still lists the campuses
 
 
-async def test_this_programme_resolves_from_active_application():
-    app = API.get_application("demo-applicant-1", "DEMO-APP-0001")
-    r, d = await run("programme_fees", "what are the fees for this programme?", user_id="demo-applicant-1", active=app)
-    assert "5,70,000" in r.reply and "Active application: DEMO-APP-0001" in d.calls[0][0][0]
+async def test_application_status_is_never_invented():
+    for intent in ("application_status", "offer_joining"):
+        r, _ = await run(intent, "what is my application status")
+        assert "can't see individual applications" in r.reply, intent
+        assert "Shortlisted" not in r.reply and "Under Review" not in r.reply and "demo" not in r.reply.lower()
+    s, _ = await run("application_status", "have I been selected")
+    assert "https://appstat.christuniversity.in" in s.reply and "080 40129100" in s.reply
+
+
+async def test_there_is_no_demo_data_anywhere_in_the_replies():
+    for intent in ("greeting", "application_status", "contact_support", "campus", "recommend_programmes", "programme_fees", "payment_help"):
+        r, _ = await run(intent, "mba fees")
+        assert "demo" not in r.reply.lower() and "DEMO-APP" not in r.reply and "sign in" not in r.reply.lower(), intent
 
 
 # ---------------------------------------------------------------- decisions client + wiring

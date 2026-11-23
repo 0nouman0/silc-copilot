@@ -1,0 +1,17 @@
+{"q": "What are the fees for the MBA?", "skill": "fees_deadlines", "tool": "get_fees", "args": {"programme_id": 334}, "must_contain": ["\"available\": false"], "must_not_contain": ["5,70,000", "INR"]}
+{"q": "What is the last date to apply for BBA?", "skill": "fees_deadlines", "tool": "get_application_dates", "args": {"programme_id": 101}, "must_contain": ["\"available\": false"]}
+{"q": "How many seats are there in MCA?", "skill": "fees_deadlines", "tool": "get_seats", "args": {"programme_id": 601}, "must_contain": ["\"available\": false"]}
+{"q": "What is the eligibility for the MBA?", "skill": "eligibility", "tool": "get_programme_section", "args": {"programme_id": 334, "section": "eligibility"}, "must_contain": ["minimum of 50% marks", "2027"]}
+{"q": "How do I apply for BBA?", "skill": "apply_guide", "tool": "get_programme_section", "args": {"programme_id": 101, "section": "application_process"}, "must_contain": ["Register online"]}
+{"q": "What is the selection process for MBA?", "skill": "apply_guide", "tool": "search_content", "args": {"query": "selection entrance test group discussion", "programme_id": 334}, "must_contain": ["group discussion"]}
+{"q": "Show the curriculum of MBA", "skill": "program_qa", "tool": "get_curriculum", "args": {"programme_id": 334}, "must_contain": ["Managerial Economics"]}
+{"q": "Does the MBA have specialisations?", "skill": "program_qa", "tool": "get_specializations", "args": {"programme_id": 334}, "must_contain": ["Finance"]}
+{"q": "Is there a hostel at Central campus?", "skill": "campus_facilities", "tool": "get_topic_info", "args": {"topic": "hostel", "campus": "Central"}, "must_contain": ["Hostel rooms"]}
+{"q": "Is there a hostel at Kengeri campus?", "skill": "campus_facilities", "tool": "get_topic_info", "args": {"topic": "hostel", "campus": "Kengeri"}, "must_contain": ["not available"]}
+{"q": "Which course suits me? I like business", "skill": "recommend", "tool": "rank_programs", "args": {"interests": "business administration"}, "must_contain": ["Business Administration"], "must_not_contain": ["guarantee"]}
+{"q": "What programmes do you offer in Pune", "skill": "discover"}
+{"q": "How do I contact admissions?", "tool": "get_campus_contacts", "args": {}, "must_contain": ["admissions@christuniversity.in"]}
+{"q": "Can I apply for the MBA?", "prerouter": "clarify", "must_contain": ["highest qualification"]}
+{"q": "I need a refund of my fees", "prerouter": "escalate"}
+{"q": "My payment was deducted twice", "prerouter": "escalate"}
+{"q": "What is my application status?", "prerouter": "escalate", "must_contain": ["can't see"]}

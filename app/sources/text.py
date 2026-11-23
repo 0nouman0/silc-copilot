@@ -112,6 +112,7 @@ def html_to_text(html: str | None) -> str:
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"[ \t]*\n[ \t]*", "\n", text)
     text = re.sub(r"\n{2,}", "\n", text)
+    text = re.sub(r"(?m)^- *\n(?=\S)", "- ", text)     # a list item whose text sits in a nested paragraph: keep the bullet with its text
     return text.strip()
 
 

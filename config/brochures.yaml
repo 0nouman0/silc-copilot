@@ -1,0 +1,4 @@
+# program id -> brochure file (a name under /uploads/userfiles/ on the website, or a file under data/documents/files/).
+# Only real files are listed; junk values in courses.chrPgmBrochure (e.g. "_20261014034136.") are ignored.
+brochures: {}
+#  334: MBA-2027-brochure.pdf

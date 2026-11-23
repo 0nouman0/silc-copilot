@@ -32,7 +32,7 @@ def test_grounded_rejects_invented_numbers_and_links():
 
 def test_should_compose_skips_sensitive_tables_and_choices():
     assert should_compose("programme_details", "plain text", False)
-    assert not should_compose("my_application_status", "x", False)
+    assert not should_compose("application_status", "x", False)
     assert not should_compose("guarantee_request", "x", False)
     assert not should_compose("programme_fees", "| a | b |\n|---|---|", False)
     assert not should_compose("programme_fees", "intro\n| a | b |", False)
@@ -64,21 +64,20 @@ async def test_compose_tries_next_model_but_stops_on_bad_key():
 
 async def test_engine_uses_composer_but_keeps_sources_and_falls_back():
     hist = H(("user", "who can apply for the mba"))
-    plain = await run_decision_agent(FakeDecider(ans("eligibility_criteria")), hist, user_id=None, active_application=None)
+    plain = await run_decision_agent(FakeDecider(ans("eligibility_criteria")), hist)
     nums = " ".join(sorted(set(__import__("re").findall(r"\d[\d,.]*\d|\d", plain.reply))))
     nice = f"Sure! Here is what CHRIST publishes ({nums})."
-    r = await run_decision_agent(FakeDecider(ans("eligibility_criteria")), hist, user_id=None, active_application=None,
+    r = await run_decision_agent(FakeDecider(ans("eligibility_criteria")), hist,
                                  composer=Composer([FakeProv(nice)]))
     assert r.reply == nice and r.sources == plain.sources and r.intent == plain.intent
-    bad = await run_decision_agent(FakeDecider(ans("eligibility_criteria")), hist, user_id=None, active_application=None,
+    bad = await run_decision_agent(FakeDecider(ans("eligibility_criteria")), hist,
                                    composer=Composer([FakeProv("It costs 999999 rupees for everybody always.")]))
     assert bad.reply == plain.reply
 
 
 async def test_sensitive_intent_never_reaches_the_model():
     p = FakeProv("anything goes here, honestly, 100% guaranteed")
-    r = await run_decision_agent(FakeDecider(ans("guarantee_request")), H(("user", "guarantee me a seat")), user_id=None,
-                                 active_application=None, composer=Composer([p]))
+    r = await run_decision_agent(FakeDecider(ans("guarantee_request")), H(("user", "guarantee me a seat")), composer=Composer([p]))
     assert p.calls == 0 and "100% guaranteed" not in r.reply
 
 

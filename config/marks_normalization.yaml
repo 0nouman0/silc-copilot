@@ -1,0 +1,9 @@
+# Conversion of marks to a percentage. These factors are PLACEHOLDERS: confirm the university's own rule with admissions
+# before the eligibility checker is used for CGPA/grade inputs.
+cgpa10_factor: 9.5      # percentage = CGPA on a 10-point scale * factor
+cgpa4_factor: 25.0      # percentage = CGPA on a 4-point scale * factor
+# Foreign boards are never judged by the checker: they go to a human for equivalence.
+indian_boards: [CBSE, ICSE, ISC, STATE]
+foreign_boards: [IB, CAMBRIDGE, IGCSE, OTHER]
+# Entrance scores are kept as reported.
+entrance_tests: [CUET, CAT, MAT, GMAT, CLAT, NET, GATE, CHRIST TEST]

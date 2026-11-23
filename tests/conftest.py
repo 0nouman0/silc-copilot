@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from app.catalogue import reset_catalogue
 from app.llm.base import LLMResponse, ToolCall
 from app.main import app
-from app.sources import SourceUnavailable, set_source
+from app.sources import DataNotGranted, SourceUnavailable, set_source
 
 # application window relative to today so "open now / closed" logic never makes tests time-dependent
 OPEN = (date.today() - timedelta(days=30)).isoformat()
@@ -50,20 +50,33 @@ SECTIONS = {
     201: {"eligibility": [("Eligibility", "Pass at the +2 level with 50% marks.")], "fees": [("Fees", FEES_MBA)]},
 }
 SECTION_KEY = {"eligibility": "eligibility", "fees": "fees", "selection": "selection", "placements": "placements"}
+ADMISSION_STATUS_URL = "https://appstat.christuniversity.in"
 PROCESS = [
     {"group": "ug comm", "how_to_apply": "Register on the application portal and apply online for undergraduate programmes.",
-     "eligibility": "", "selection": "", "admission_dates": "Results are published on the status page.", "contact_note": "The university collects no capitation fee."},
+     "eligibility": "", "selection": "", "admission_dates": f"Results are published on the status page {ADMISSION_STATUS_URL} .", "contact_note": "The university collects no capitation fee."},
     {"group": "pg commer", "how_to_apply": "Register on the application portal and apply online for postgraduate programmes.",
      "eligibility": "", "selection": "", "admission_dates": "", "contact_note": ""},
 ]
 
 
+CAMPUS_DETAILS = [
+    {"campus_id": 1, "name": CENTRAL, "address": "Hosur Road, Bangalore 560029", "phones": ["080 40129100"], "emails": ["mail@christuniversity.in"],
+     "website": "https://christuniversity.in", "description": "The main campus."},
+    {"campus_id": 24, "name": KENGERI, "address": "Kanmanike, Kumbalgodu, Mysore Road, Bangalore 560074", "phones": ["080 62689800", "08 40129828"],
+     "emails": ["mail@christuniversity.in"], "website": "https://bkc.christuniversity.in", "description": None},
+]
+FACILITIES = [
+    {"campus_id": 24, "campus": KENGERI, "facility": "Library", "text": "An up-to-date library with books in a variety of domains.", "link": None},
+    {"campus_id": 24, "campus": KENGERI, "facility": "Transportation", "text": "A full-fledged transport department runs buses for students and staff.", "link": None},
+    {"campus_id": 1, "campus": CENTRAL, "facility": "Accommodation", "text": "Hostel rooms are available for outstation students.", "link": "https://christuniversity.in/hostel"},
+]
+
 class FakeSource:
     """In-memory CatalogueSource with the same dict shapes as MySqlSource."""
     name = "fake"
 
-    def __init__(self, down=False):
-        self.down = down
+    def __init__(self, down=False, facilities_granted=True):
+        self.down, self.facilities_granted = down, facilities_granted
 
     def _chk(self):
         if self.down:
@@ -114,8 +127,38 @@ class FakeSource:
         self._chk()
         return [{"campus_id": 1, "name": CENTRAL}, {"campus_id": 24, "name": KENGERI}]
 
+    def list_campus_details(self):
+        self._chk()
+        return [dict(c) for c in CAMPUS_DETAILS]
+
+    def list_facilities(self, campus_id):
+        self._chk()
+        if not self.facilities_granted:
+            raise DataNotGranted("no SELECT grant")
+        return [dict(f) for f in FACILITIES if campus_id is None or f["campus_id"] == campus_id]
+
     def ping(self):
         return not self.down
+
+
+@pytest.fixture(autouse=True)
+def isolated_catalog(monkeypatch):
+    """Tests never touch a real database: no DB credentials, and every test starts with no catalog and no injected reader."""
+    from app.catalog.refresh import set_catalog, set_reader
+    for k in ("AGENT_DB_USER", "AGENT_DB_PASSWORD", "CATALOGUE_SOURCE", "ADMIN_TOKEN", "CATALOG_SNAPSHOT"):
+        monkeypatch.delenv(k, raising=False)
+    set_catalog(None)
+    set_reader(None)
+    from app.routers import api
+    api._hits.clear()
+    api._DONE.clear()
+    api._INFLIGHT.clear()
+    api._VOICE.update(misses=0, down_until=0.0)
+    from app import live
+    live.clear_fee_cache()
+    yield
+    set_catalog(None)
+    set_reader(None)
 
 
 @pytest.fixture(autouse=True)
@@ -159,12 +202,3 @@ def demo_env(monkeypatch):
 @pytest.fixture
 def client():
     return TestClient(app)
-
-
-@pytest.fixture
-def login(client):
-    def _login(uid):
-        r = client.post("/api/session/demo-login", json={"user_id": uid})
-        assert r.status_code == 200
-        return client
-    return _login

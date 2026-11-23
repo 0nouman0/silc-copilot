@@ -16,7 +16,7 @@ import re
 from ..llm.base import LLMError, Message
 from ..llm.openai_compatible import OpenAICompatibleProvider
 
-SKIP_INTENTS = {"my_applications", "my_application_status", "offer_joining", "guarantee_request", "other_person_data", "off_topic",
+SKIP_INTENTS = {"application_status", "offer_joining", "guarantee_request", "other_person_data", "off_topic",
                 "unclear", "data_not_ready", "greeting"}
 MAX_FACTS = 6000
 DEADLINE_S = 14.0

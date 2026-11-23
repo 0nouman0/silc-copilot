@@ -15,20 +15,23 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
-from ..applicants.adapter import Application
-from ..catalogue import Programme, Resolution, get_catalogue
+from ..catalogue import Programme, Resolution, detect_level, get_catalogue
 from ..llm.decisions import DecisionsClient
 from ..models import SourceRef
 from ..sources import SourceUnavailable
 from ..sources.text import tidy
 from ..tools import ToolContext, ToolOutput, execute
+from ..catalog.refresh import current_catalog
 from .orchestrator import AgentResult
+from .prerouter import contact_block as office_contacts
+from .router import INFO_RX
 
 CONF_MIN = 0.45
 UNI = "CHRIST (Deemed to be University)"
 
 INTENTS = {
     "greeting": "Greeting or small talk such as hello, hi, thanks",
+    "recommend_programmes": "Wants help CHOOSING a programme: asks for suggestions or recommendations, says what they are interested in or enjoy, is unsure or confused what to study, asks what suits them or what to do after 12th/graduation, or answers the assistant's questions about their interests, level or campus",
     "programmes_overview": "Asks which programmes/courses/degrees CHRIST offers, optionally by level, subject or campus",
     "programme_details": "Asks about one programme: duration, mode, medium, specializations, campus, overview, careers",
     "curriculum": "Asks about syllabus, subjects, semester-wise curriculum, course structure, core or elective subjects",
@@ -51,8 +54,7 @@ INTENTS = {
     "international": "Asks about international/foreign/NRI applicants, visa, passport, IELTS/TOEFL, equivalence",
     "contact_support": "Asks how to contact admissions, phone, email, counsellor, helpline, brochure, support",
     "about_university": "Asks about CHRIST University itself: history, rankings, accreditation, NAAC, NIRF, leadership, vision, recognition",
-    "my_applications": "Asks how many applications they have submitted or to list their own applications",
-    "my_application_status": "Asks about the status or outcome of THEIR OWN specific application: have I been selected, is mine shortlisted/rejected, what next (NOT what a status term means in general)",
+    "application_status": "Asks about the status or outcome of an application they already submitted: have I been selected, is mine shortlisted/rejected, what is my status, how many applications do I have, did my application go through (NOT what a status term means in general)",
     "guarantee_request": "Asks the assistant to guarantee or promise admission, a scholarship, a seat or a job, or to make the admission decision",
     "other_person_data": "Asks about another person's application, status, marks or personal data",
     "off_topic": "Unrelated to CHRIST University admissions",
@@ -63,6 +65,7 @@ PHRASE = {"programme_fees": "What are the fees for", "eligibility_criteria": "Wh
           "entrance_exam": "Selection process for", "application_fee": "Application fee for"}
 NEXT = ["What is the eligibility for {n}?", "What are the fees for {n}?", "Application dates for {n}", "Show the curriculum of {n}"]
 GENERIC = {
+    "recommend_programmes": ["Which programmes suit me after 12th?", "Suggest postgraduate programmes", "I'm not sure what to study"],
     "programmes_overview": ["Tell me about the MBA programme", "What are the application dates?"],
     "dates": ["How do I apply?", "What are the fees for the MBA?"],
     "application_help": ["Which documents do I need?", "What are the application dates?"],
@@ -74,8 +77,7 @@ GENERIC = {
     "placements": ["Show me the programmes available", "How do I contact the Admissions Office?"],
     "international": ["Which documents do I need?", "What are the application dates?"],
     "about_university": ["Show me the programmes available", "How do I apply?"],
-    "my_applications": ["What is the status of my application?"],
-    "my_application_status": ["What are the fees for this programme?", "What is the eligibility for this programme?"],
+    "application_status": ["How do I apply?", "Which programmes would suit me?"],
 }
 DEFAULT_SUGGEST = ["Show me the programmes available", "How do I apply?", "How do I contact the Admissions Office?"]
 
@@ -107,12 +109,9 @@ def build_questions() -> dict[str, Any]:
     }
 
 
-def build_state(history: list[dict], *, signed_in: bool, active: Application | None) -> list[str]:
-    ctx = [f"Assistant for {UNI}, Bangalore", f"Signed in: {'yes' if signed_in else 'no'}"]
-    if active:
-        ctx.append(f"Active application: {active.application_id} ({active.programme_name})")
+def build_state(history: list[dict]) -> list[str]:
     lines = [f'{m["role"].upper()}: {m["content"][:300]}' for m in history[:-1][-6:]]
-    return ["Context: " + "; ".join(ctx), "Conversation so far:\n" + ("\n".join(lines) or "(none)"),
+    return [f"Context: Assistant for {UNI}, Bangalore", "Conversation so far:\n" + ("\n".join(lines) or "(none)"),
             "Latest user message: " + history[-1]["content"][:1000]]
 
 
@@ -131,14 +130,14 @@ class Turn:
     ctx: ToolContext
     used: list[str] = field(default_factory=list)
     sources: dict[str, SourceRef] = field(default_factory=dict)
-    demo: bool = False
     followups: list[str] | None = None
+    cards: list[dict] = field(default_factory=list)   # structured programme suggestions for the UI
+    agent: str = "info"   # the tool set this turn may use; the recommendation handler switches to "recommend"
 
     def run(self, tool: str, **args) -> ToolOutput:
-        out = execute(tool, json.dumps({k: v for k, v in args.items() if v is not None}), self.ctx)
+        out = execute(tool, json.dumps({k: v for k, v in args.items() if v is not None}), self.ctx, self.agent)
         if tool not in self.used:
             self.used.append(tool)
-        self.demo = self.demo or bool(out.data.get("demo"))
         for s in out.sources:
             self.sources[f"{s.url or s.doc_id}|{s.title}"] = s
         return out
@@ -149,8 +148,6 @@ class Req:
     text: str
     history: list[dict]
     u: Understanding
-    signed_in: bool
-    active: Application | None
     res: Resolution | None
 
 
@@ -190,17 +187,13 @@ def _label(p: Programme) -> str:
 
 
 # ----------------------------------------------------------------------------- programme resolution
-def resolve_programme(history: list[dict], active: Application | None) -> Resolution:
+def resolve_programme(history: list[dict]) -> Resolution:
     c = get_catalogue()
     user_msgs = [m["content"] for m in history if m["role"] == "user"]
     for msg in [user_msgs[-1]] + list(reversed(user_msgs[:-1]))[:4]:
         r = c.resolve(msg)
         if r.best:
             return _collapse_campuses(r, msg)
-    if active:
-        r = c.resolve(active.programme_name)
-        if r.best:
-            return _collapse_campuses(r, active.programme_name)
     return Resolution(None, [])
 
 
@@ -275,8 +268,12 @@ def _missing(what: str) -> str:
 
 # ----------------------------------------------------------------------------- handlers
 def h_greeting(t, q):
-    return (f"Hello! I'm the unofficial admissions assistant for **{UNI}**. I can help with programmes, eligibility, fees, curriculum, selection, "
-            "the application process and campuses. What would you like to know?")
+    """Fallback only (the dialog manager normally answers greetings first, in code). No database call, and never the welcome message again."""
+    from .dialog import greeting_reply, smalltalk_kind
+    t.followups = ["Show me the programmes available", "How do I apply?"]
+    if not smalltalk_kind(q.text):                       # the decider labelled something else a greeting: say so honestly instead of greeting back
+        return ("I'm not sure what you mean by that. Tell me a programme or a degree (for example *B.Tech* or *BSc*), or ask about eligibility, the curriculum or how to apply.")
+    return greeting_reply(q.text, q.history)
 
 
 def h_programmes(t, q):
@@ -297,8 +294,7 @@ def h_programmes(t, q):
 
 def _facts(d: dict) -> list[list[str]]:
     return [["Level", _na(d.get("level"))], ["Campus", _na(d.get("campus"))], ["Department", _na(d.get("department"))],
-            ["Duration", _na(_dur(d.get("duration_years")))], ["Term type", _na(d.get("term_type"))],
-            ["Approved intake", _na(d.get("approved_intake"))]]
+            ["Duration", _na(_dur(d.get("duration_years")))], ["Term type", _na(d.get("term_type"))]]
 
 
 def _summary(d: dict) -> str:
@@ -314,9 +310,9 @@ def h_details(t, q):
     if (e := _err(out)):
         return e
     d = out.data["programme"]
-    rows = _facts(d) + [["Recorded application window", f"{_fmt_date(d.get('application_open'))} → {_fmt_date(d.get('application_close'))}"]]
+    rows = _facts(d)
     t.followups = [x.format(n=p.name) for x in NEXT]
-    note = "\n\n_Application dates are as recorded in the database and may be out of date._"
+    note = "\n\n_Fees, application dates and seats are live admissions data: ask me for them and I'll tell you what is available._"
     return f"**{p.name}**\n\n" + _table(["Item", "Detail"], rows) + (f"\n\n{_summary(d)}" if _summary(d) else "") + note + other_campuses(q)
 
 
@@ -388,6 +384,13 @@ def h_eligibility(t, q, check=False):
     last = q.history[-1]["content"].strip()
     if not pcts and asked and re.fullmatch(r"\d{2}(?:\.\d+)?", last):
         pcts = [float(last)]
+    v = t.run("check_eligibility", programme_id=p.id, percent=pcts[-1] if pcts else None).data.get("verdict")
+    if v and v["outcome"] in ("eligible", "not_eligible"):
+        why = "\n".join(f"- {c['condition']}: {c['detail']}" for c in v["conditions_checked"]) or "\n".join(f"- {r}" for r in v["reasons"])
+        label = "You meet the published criteria" if v["outcome"] == "eligible" else "You do not meet a published criterion"
+        return f"**{label}** — {p.name}\n\n{why}\n\n" + body + f"\n\n_{v['disclaimer']}_"
+    if v and v["outcome"] == "need_info" and v.get("question"):
+        return f"{v['question']}\n\n" + body
     res = t.run("assess_preliminary_eligibility", programme_id=p.id, percentage=pcts[-1] if pcts else None).data["result"]
     return (f"**{res['label']}** — {p.name}\n\n{res['detail']}\n\n" + body + f"\n\n_{res['disclaimer']}_")
 
@@ -396,46 +399,51 @@ STATUS_LABEL = {"open": "Open", "upcoming": "Opens soon", "closed": "Closed", "u
 DATES_CAVEAT = "_These are the dates recorded in the CHRIST database and they may be out of date. Please confirm the current dates with the Admissions Office._"
 
 
-def h_dates(t, q):
+def _live_unavailable(t, q, intent: str, tool_name: str, title: str, what: str) -> str:
+    """Fees, dates and seats are ERP-only. Until the ERP is connected the honest answer is 'not available right now' plus the contact."""
+    if (m := need_programme(t, q, intent, what)):
+        return m
     res = q.res
     if res and res.best and not res.ambiguous:
         p = res.best
-        t.run("get_admission_dates", programme_id=p.id)
-        t.followups = [x.format(n=p.name) for x in NEXT if "Application dates" not in x]
-        rows = [[_label(x), _fmt_date(x.application_open), _fmt_date(x.application_close), STATUS_LABEL[x.status]] for x in res.candidates]
-        return f"**Application dates — {p.name}**\n\n" + _table(["Campus", "Opens", "Closes", "Status"], rows) + "\n\n" + DATES_CAVEAT
-    if res and res.candidates:  # several different programmes match: ask which
-        return need_programme(t, q, "dates", "application dates")
-    out = t.run("get_admission_dates")
-    w = out.data["windows"]
-    if not w:
-        return f"No application dates are recorded in the database. {CONTACT_HINT}"
-    current = sorted((x for x in w if x["status"] in ("open", "upcoming")), key=lambda x: (x["close"] or "9", x["level"]))
-    if current:
-        rows = [[x["level"].title(), _na(x["campus"]), _fmt_date(x["open"]), _fmt_date(x["close"]), STATUS_LABEL[x["status"]], str(x["programmes"])] for x in current]
-        return ("**Application windows recorded in the database** · open or upcoming\n\n" + _table(["Level", "Campus", "Opens", "Closes", "Status", "Programmes"], rows[:30]) +
-                "\n\nName a programme (for example *MBA*) for its exact dates.\n\n" + DATES_CAVEAT)
-    latest = sorted(w, key=lambda x: x["close"] or "", reverse=True)[:6]
-    rows = [[x["level"].title(), _na(x["campus"]), _fmt_date(x["open"]), _fmt_date(x["close"]), str(x["programmes"])] for x in latest]
-    return ("**No open application window is recorded in the database.** Every window stored there has already closed; the most recent ones are:\n\n" +
-            _table(["Level", "Campus", "Opened", "Closed", "Programmes"], rows) + f"\n\nThe database may simply not have been updated for the current cycle. {CONTACT_HINT}")
+        t.run(tool_name, programme_id=p.id)
+        t.followups = [x.format(n=p.name) for x in NEXT if what not in x.lower()]
+        head = f"**{title} — {p.name}**{' · ' + p.campus if p.campus else ''}"
+    else:
+        head = f"**{title}**"
+    lead = "Fee information for this programme is not available in the current university database" if what == "fees" else f"The {what} for this programme are not available in the current university database"
+    return (f"{head}\n\n{lead}: they come from the university's live admissions system, which is not connected to this assistant yet, so I can't give you a figure "
+            f"and I won't guess one.\n\nPlease ask the admissions office:\n\n{office_contacts()}" + other_campuses(q))
+
+
+def h_dates(t, q):
+    res = q.res
+    if not (res and res.candidates):      # no programme named: one general answer, no need to ask which
+        t.run("get_application_dates")
+        return (f"**Application dates**\n\nApplication and entrance-test dates come from the university's live admissions system, which is not connected to this assistant yet, "
+                f"so I can't give you a date and I won't guess one.\n\nPlease ask the admissions office:\n\n{office_contacts()}")
+    return _live_unavailable(t, q, "dates", "get_application_dates", "Application dates", "application dates")
 
 
 def h_fees(t, q, fee_only=False):
-    if (m := need_programme(t, q, "application_fee" if fee_only else "programme_fees", "fees")):
+    intent = "application_fee" if fee_only else "programme_fees"
+    if (m := need_programme(t, q, intent, "fees")):
         return m
     p = q.res.best
-    out = t.run("get_fee_structure", programme_id=p.id)
+    fact = (t.run("get_fees", programme_id=p.id).data.get("live_fact") or {})
+    if not fact.get("available"):
+        return _live_unavailable(t, q, intent, "get_fees", "Application / registration fee" if fee_only else "Fees", "fees")
+    v = fact["value"]
     t.followups = [x.format(n=p.name) for x in NEXT if "fees" not in x]
-    if (e := _err(out)):
-        return f"{e} {CONTACT_HINT}"
-    rows = out.data["sections"]
+    title = "Application / registration fee" if fee_only else "Fees"
+    where = " \u00b7 " + p.campus if p.campus else ""
+    head = f"**{title} \u2014 {p.name}**{where}"
+    text = v["text"]
     if fee_only:
-        text = "\n".join(r["text"] for r in rows)
         lines = [ln for ln in text.split("\n") if re.search(r"registration fee|application fee|caution deposit|non-refundable", ln, re.I) and not ln.startswith("|")]
         if lines:
-            return f"**Application / registration fee — {p.name}**\n\n" + "\n".join(f"- {ln.strip()}" for ln in lines) + other_campuses(q)
-    return f"**Fees — {p.name}**{' · ' + p.campus if p.campus else ''} (as published in the CHRIST database)\n\n{_sections(rows, 2)}" + other_campuses(q)
+            text = "\n".join(f"- {ln.strip()}" for ln in lines)
+    return f"{head}\n\n{tidy(text)}\n\n_{fact['note']}_" + other_campuses(q)
 
 
 def h_selection(t, q):
@@ -486,22 +494,87 @@ def h_apply(t, q):
     return body + "\n\n_I can explain the process, but I can't submit, edit or withdraw an application for you._"
 
 
+def _office(t: Turn) -> str:
+    """The admissions office's phone and email as recorded for the main campus (first active campus in the database)."""
+    rows = t.run("get_campus_details").data.get("campuses") or []
+    if not rows:
+        return ""
+    c = rows[0]
+    bits = [b for b in [", ".join(c.get("phones") or []), ", ".join(c.get("emails") or [])] if b]
+    return f"**Contact the Admissions Office:** {' · '.join(bits)} ({c['name']})" if bits else ""
+
+
+def _contact_block(c: dict, heading: bool = True) -> str:
+    lines = [f"#### {c['name']}"] if heading else []
+    if c.get("address"):
+        lines.append(f"- **Address:** {c['address']}")
+    if c.get("phones"):
+        lines.append(f"- **Phone:** {', '.join(c['phones'])}")
+    if c.get("emails"):
+        lines.append(f"- **Email:** {', '.join(c['emails'])}")
+    if c.get("website"):
+        lines.append(f"- **Website:** {c['website']}")
+    return "\n".join(lines)
+
+
 def h_payment(t, q):
-    return ("Payment details (failed or pending payments, receipts, refunds) aren't in the CHRIST programme database I read. "
-            "For transaction verification, refunds or debited-but-unconfirmed payments, please contact the CHRIST Admissions Office / payment support. "
-            "_I can't verify payments, and I will never ask for your PIN, CVV, OTP or password._")
+    office = _office(t)
+    return ("Payment records (failed or pending payments, receipts, refunds) aren't in the CHRIST programme database I read, so I can't check or fix a payment. "
+            "For transaction verification, refunds or an amount debited without confirmation, please contact the CHRIST Admissions Office with your transaction reference.\n\n"
+            + (office + "\n\n" if office else "") + "_I will never ask for your PIN, CVV, OTP or password._")
 
 
 def h_contact(t, q):
-    t.followups = ["How do I apply?", "Show me the programmes available"]
-    return (f"{_missing('Admissions phone numbers and email addresses')}\n\n_I can't create support tickets or book callbacks myself._")
+    campus = _campus_named(q.text, get_catalogue())
+    out = t.run("get_campus_details", campus=campus)
+    if (e := _err(out)):
+        return e
+    rows = out.data["campuses"]
+    t.followups = ["Which programmes would suit me?", "How do I apply?"]
+    return ("**Contact details**" + (f" · {rows[0]['name']}" if len(rows) == 1 else "") + "\n\n" + "\n\n".join(_contact_block(c, len(rows) > 1) for c in rows) +
+            "\n\n_As recorded in the CHRIST database. I can't create support tickets or book callbacks myself._")
 
 
 def h_offer(t, q):
-    if q.signed_in and q.active:
-        return h_my_status(t, q)
     body = _process(t, q, "admission_dates", "Results and offers")
-    return body + ("\n\n" + ("Select an application to see its status." if q.signed_in else "Sign in to see the status of your own application."))
+    return body + "\n\n_For the status of your own application or offer, please use the application status page or contact the Admissions Office. I can't see individual applications._"
+
+
+def h_application_status(t, q):
+    """The data holds only public programme information, never applicant records, so say that plainly and point to the real channels."""
+    portal = None
+    for r in t.run("get_admission_process").data.get("processes", []):
+        m = re.search(r"https?://\S*appstat\S*", r.get("admission_dates") or "")
+        if m:
+            portal = m.group(0).rstrip(".,;)")
+            break
+    office = _office(t)
+    t.followups = ["How do I apply?", "Which programmes would suit me?"]
+    return ("I can't see individual applications. I only have CHRIST's public programme information, not applicant records, so I can't tell you your application status, "
+            "whether you've been shortlisted or selected, or the state of a payment.\n\n"
+            + (f"Your status is published on the application status page: {portal}\n\n" if portal else "") + (office + "\n\n" if office else "")
+            + "_Please never share passwords, OTPs or card details with me._")
+
+
+def h_hostel(t, q):
+    campus = _campus_named(q.text, get_catalogue())
+    out = t.run("get_campus_facilities", campus=campus, facility="hostel")
+    t.followups = ["Which campuses does CHRIST have?", "Which programmes would suit me?"]
+    if _err(out):
+        office = _office(t)
+        where = f" for {campus}" if campus else ""
+        return f"Hostel and accommodation details{where} aren't available to me right now. " + (office if office else CONTACT_HINT)
+    return "**Hostel and accommodation**\n\n" + _facility_blocks(out.data["facilities"])
+
+
+def _facility_blocks(rows: list[dict]) -> str:
+    out = []
+    for r in rows:
+        out.append(f"#### {r['campus']} · {r['facility']}\n\n" + tidy(r["text"]) + (f"\n\nMore: {r['link']}" if r.get("link") else ""))
+    return "\n\n".join(out)
+
+
+FACILITY_WORDS = re.compile(r"\b(facilit\w*|library|libraries|transport\w*|bus|labs?|laborator\w*|auditorium|sports?|canteen|cafeteria|medical|infrastructure|wi-?fi|it services|research facilities)\b", re.I)
 
 
 def h_scholarship(t, q):
@@ -531,12 +604,93 @@ def h_placements(t, q):
 
 
 def h_campus(t, q):
-    out = t.run("list_campuses")
-    if _err(out):
-        return _err(out)
-    names = [c["name"] for c in out.data["campuses"]]
-    return ("**CHRIST campuses** (from the CHRIST database)\n\n" + "\n".join(f"- {n}" for n in names) +
-            "\n\nCampus facilities, library and transport details aren't stored in the database I read. " + CONTACT_HINT)
+    cat = get_catalogue()
+    campus = _campus_named(q.text, cat)
+    if FACILITY_WORDS.search(q.text):
+        word = FACILITY_WORDS.search(q.text).group(0)
+        generic = word.lower().startswith(("facilit", "infrastructure"))
+        out = t.run("get_campus_facilities", campus=campus, facility=None if generic else word)
+        if not _err(out):
+            t.followups = ["How can I contact the campus?", "Which programmes would suit me?"]
+            return "**Campus facilities**\n\n" + _facility_blocks(out.data["facilities"])
+        facilities_note = f"\n\n_{_err(out)}_"
+    else:
+        facilities_note = ""
+    out = t.run("get_campus_details", campus=campus)
+    if (e := _err(out)):
+        return e
+    rows = out.data["campuses"]
+    t.followups = ["How can I contact the Admissions Office?", "Tell me about hostel facilities", "Which programmes would suit me?"]
+    return ("**CHRIST campuses**\n\n" + "\n\n".join(f"#### {c['name']}\n" + "\n".join(x for x in (f"- {c['address']}" if c.get("address") else "",
+            f"- Website: {c['website']}" if c.get("website") else "") if x) for c in rows) + facilities_note +
+            "\n\n_Ask me for a campus's phone and email, its hostel or other facilities, or the programmes offered there._")
+
+
+def _campus_named(text: str, cat) -> str | None:
+    words = set(re.findall(r"[a-z]+", text.lower()))
+    for c in cat.campuses():
+        if {w for w in re.findall(r"[a-z]+", c.lower()) if w not in ("bangalore", "campus")} & words:
+            return c
+    return None
+
+
+def _profile_questions(t: Turn, q: Req, cat, level: str | None = None, campus: str | None = None, has_interest: bool = False) -> str:
+    """No usable match yet: ask ONLY for what is still missing, and never repeat a question that was already asked. Nothing was looked up,
+    so no source is attached."""
+    t.sources.clear()
+    t.followups = [f"I'm interested in {d}" for d in cat.departments(5)] + ["I'm not sure what to study"]
+    asked = any("glad to help you choose" in m["content"] or "couldn't match" in m["content"] for m in q.history if m["role"] == "assistant")
+    todo = []
+    if not has_interest:
+        todo.append("What subjects or fields do you enjoy, or what would you like to become? (for example *computers*, *AI*, *business*, *law*)" if not asked
+                    else "Try a field or subject word (for example *computer science*, *data science*, *commerce*) or the programme's full name.")
+    if not level:
+        todo.append("Are you looking at an **undergraduate**, **postgraduate** or **PhD** programme?")
+    if not campus:
+        todo.append("Do you prefer a particular campus?")
+    head = ("I couldn't match that to a CHRIST programme yet." if asked else "I'd be glad to help you choose.")
+    return head + (" To narrow it down:\n\n" + "\n".join(f"- {x}" for x in todo) if todo else " Tell me a little more about what you enjoy.") + \
+        "\n\nAnswer in your own words, even just one of these."
+
+
+def h_recommend(t, q):
+    """Recommendation agent (decider mode): its own tool set, no facts like fees or dates. Interests accumulate over the whole chat.
+    The suggestions go out as structured cards (the UI renders them with action buttons); the text is only the introduction."""
+    t.agent = "recommend"
+    cat = get_catalogue()
+    latest = q.history[-1]["content"]
+    mine = " ".join(m["content"] for m in q.history if m["role"] == "user")[-1500:]
+    level = q.u.level if q.u.level in ("undergraduate", "postgraduate", "doctoral") else (detect_level(latest) or detect_level(mine))
+    campus = _campus_named(latest, cat) or _campus_named(mine, cat)
+    said_before = " ".join(m["content"] for m in q.history if m["role"] == "assistant")
+    shown = [p.name for p in cat.programmes if p.name in said_before]            # "show me more" must not repeat what was already suggested
+    if current_catalog() is not None:          # blueprint ranking: programme content (BM25), eligibility filter, saved profile
+        out = t.run("rank_programs", interests=mine, level={"undergraduate": "UG", "postgraduate": "PG", "doctoral": "PhD"}.get(level), campus=campus,
+                    exclude_names=shown or None)
+        recs = [{"programme_id": r["programme_id"], "name": r["name"], "level": r["level"].lower(), "department": r["department"], "duration_years": r["duration_years"],
+                 "campuses": r["campuses"], "matched_interests": r["matched_words"], "career_paths": r["career_paths"], "eligibility": r["eligibility"]}
+                for r in out.data.get("recommendations", [])]
+    else:
+        out = t.run("recommend_programmes", interests=mine, level=level, campus=campus, exclude_names=shown or None)
+        recs = out.data.get("recommendations")
+    if not recs and shown and cat.interest_tokens(mine):
+        t.followups = [f"I'm interested in {d}" for d in cat.departments(4)]
+        return "Those are all the programmes I found for what you've told me so far. Tell me about another interest or field and I'll look again."
+    if not recs:                                # last resort: the latest message as a literal programme-name search
+        found = (t.run("search_programmes", query=latest, level=level, campus=campus).data.get("programmes") or []) if cat._units(latest) else []
+        if 0 < len(found) <= 12:
+            t.followups = [f"Tell me about {found[0]['name']}", "Which programmes would suit me?"]
+            return ("**Closest programmes by name**\n\n" + _table(["Programme", "Level", "Campus"], [[p["name"], p["level"].title(), _na(p["campus"])] for p in found[:8]]))
+        return _profile_questions(t, q, cat, level, campus, has_interest=False)   # nothing matched, so a field is still needed
+    t.cards = recs
+    seen_words = list(dict.fromkeys(w for r in recs for w in r["matched_interests"]))[:4]
+    echo = ", ".join(x for x in (level, campus) if x)
+    t.followups = [f"Tell me about {recs[0]['name']}", f"What is the eligibility for {recs[0]['name']}?", "Show me more options"]
+    return ("**Programmes that may suit you**\n\n"
+            f"Based on what you've told me (matching: {', '.join(seen_words)}{'; ' + echo if echo else ''}), these CHRIST programmes look like the best fit. "
+            "Open a card to see its eligibility or curriculum, or tell me more about what you like and I'll refine the list.\n\n"
+            "_These are suggestions made by matching your interests to programme content in the CHRIST catalog. They are not admission advice; "
+            "the Admissions Office decides eligibility._")
 
 
 def h_unavailable(what: str):
@@ -545,56 +699,13 @@ def h_unavailable(what: str):
     return fn
 
 
-SIGN_IN = "Please **sign in** (top right) so I can look up your own applications. I can't share personal application details otherwise."
-
-
-def _apps(t):
-    return t.run("get_my_applications")
-
-
-def h_my_apps(t, q):
-    if not q.signed_in:
-        return SIGN_IN
-    out = _apps(t)
-    if (e := _err(out)):
-        return e
-    apps = out.data["applications"]
-    if not apps:
-        return "I don't see any applications associated with your account."
-    return (f"I found **{len(apps)} application{'s' if len(apps) != 1 else ''}** associated with your account _(demo applicant records — no live CHRIST applicant system is connected)_:\n\n" +
-            _table(["Reference", "Programme", "Status", "Last updated"], [[a["application_id"], a["programme_name"], a["status"], _na(a["last_updated"])] for a in apps]) +
-            "\n\nUse **Switch application** below the message box to pick one to discuss.")
-
-
-def h_my_status(t, q):
-    if not q.signed_in:
-        return SIGN_IN
-    app_id = q.active.application_id if q.active else None
-    if not app_id:
-        out = _apps(t)
-        if (e := _err(out)):
-            return e
-        apps = out.data["applications"]
-        if len(apps) != 1:
-            return "Which application would you like to discuss? " + ("Use **Switch application** below the message box." if apps else "I don't see any applications on your account.")
-        app_id = apps[0]["application_id"]
-    out = t.run("get_application_status", application_id=app_id)
-    if (e := _err(out)):
-        return e
-    a = out.data["application"]
-    offer = a["offer_status"]
-    return (f"**{a['programme_name']}** ({a['application_id']}) _(demo applicant record)_\n\n- **Status:** {a['status']}\n"
-            f"- **Offer status:** {offer if offer else 'No offer information has been returned for this application'}\n"
-            f"- **Last updated:** {_na(a['last_updated'])}\n\n" + ("" if offer else f"_“{a['status']}” does not mean you have been selected or offered a seat._"))
-
-
 def h_guarantee(t, q):
-    return ("I can't guarantee or promise admission, a scholarship, a seat or a job, and I don't make admission decisions — the CHRIST Admissions Office does. "
+    return ("I can't guarantee or promise admission, a scholarship, a seat or a job, and I don't make admission decisions: the CHRIST Admissions Office does. "
             "I can share the published criteria and give you a *preliminary* indication.")
 
 
 def h_other(t, q):
-    return "I can't share another person's application or personal information. I can only discuss your own applications after you sign in."
+    return "I can't share anyone's application or personal information, and I don't have access to applicant records. I can help with programmes, eligibility, fees and the admission process."
 
 
 def h_off(t, q):
@@ -602,41 +713,44 @@ def h_off(t, q):
 
 
 HANDLERS = {
-    "greeting": h_greeting, "programmes_overview": h_programmes, "programme_details": h_details, "curriculum": h_curriculum,
+    "greeting": h_greeting, "recommend_programmes": h_recommend, "programmes_overview": h_programmes, "programme_details": h_details, "curriculum": h_curriculum,
     "compare_programmes": h_compare, "eligibility_criteria": lambda t, q: h_eligibility(t, q, False), "eligibility_check": lambda t, q: h_eligibility(t, q, True),
     "dates": h_dates, "commencement": h_unavailable("Class start dates and the academic calendar"), "application_help": h_apply, "payment_help": h_payment,
     "application_fee": lambda t, q: h_fees(t, q, True), "programme_fees": lambda t, q: h_fees(t, q, False), "entrance_exam": h_selection,
     "offer_joining": h_offer, "documents": h_unavailable("A required-documents checklist"),
-    "scholarships": h_scholarship, "hostel": h_unavailable("Hostel and accommodation information"), "campus": h_campus,
+    "scholarships": h_scholarship, "hostel": h_hostel, "campus": h_campus,
     "placements": h_placements, "international": h_unavailable("Guidance for international and NRI applicants (beyond the fee categories in a programme's fee table)"),
     "contact_support": h_contact, "about_university": h_unavailable("General information about the university (history, rankings, accreditation)"),
-    "my_applications": h_my_apps, "my_application_status": h_my_status,
+    "application_status": h_application_status,
     "guarantee_request": h_guarantee, "other_person_data": h_other, "off_topic": h_off,
 }
 PROG_INTENTS = {"programme_details", "curriculum", "eligibility_criteria", "eligibility_check", "dates", "application_fee", "programme_fees", "entrance_exam",
                 "scholarships", "placements", "application_help", "offer_joining"}
+STICKY_RECOMMEND = {"off_topic", "programmes_overview", "unclear", "programme_details", "eligibility_check"}
 LOW_CONFIDENCE = ("I'm not sure I understood that. Could you rephrase, or pick a topic?\n\n"
                   "- Programmes and curriculum\n- Eligibility\n- Application dates\n- Fees\n- Applying and selection")
 
 
 # ----------------------------------------------------------------------------- entry point
-async def run_decision_agent(decider: DecisionsClient, history: list[dict], *, user_id: str | None,
-                             active_application: Application | None, composer=None) -> AgentResult:
-    ctx = ToolContext(user_id=user_id, active_application_id=active_application.application_id if active_application else None)
-    t = Turn(ctx)
-    answers = await decider.decide(build_state(history, signed_in=bool(user_id), active=active_application), build_questions())
+async def run_decision_agent(decider: DecisionsClient, history: list[dict], *, composer=None, last_agent: str | None = None, profile=None) -> AgentResult:
+    t = Turn(ToolContext(profile=profile))
+    answers = await decider.decide(build_state(history), build_questions())
     u = understand(answers)
+    # While the applicant is answering the recommender's questions ("I like computers", "undergraduate") the recommender keeps the
+    # conversation, unless they now ask for a specific fact, which goes to the information agent.
+    if last_agent == "recommend" and u.intent in STICKY_RECOMMEND and not INFO_RX.search(history[-1]["content"]):
+        u.intent, u.confidence = "recommend_programmes", 1.0
 
     if u.confidence < CONF_MIN and u.intent not in ("greeting", "guarantee_request", "other_person_data"):
-        return AgentResult(LOW_CONFIDENCE, [], t.used, DEFAULT_SUGGEST, t.demo, intent="unclear")
+        return AgentResult(LOW_CONFIDENCE, [], t.used, DEFAULT_SUGGEST, intent="unclear", agent=last_agent or "info")
 
     try:
-        res = resolve_programme(history, active_application) if (u.intent in PROG_INTENTS or u.intent == "compare_programmes") else None
-        q = Req(history[-1]["content"], history, u, bool(user_id), active_application, res)
+        res = resolve_programme(history) if (u.intent in PROG_INTENTS or u.intent == "compare_programmes") else None
+        q = Req(history[-1]["content"], history, u, res)
         reply = HANDLERS[u.intent](t, q)
     except SourceUnavailable:
         return AgentResult("The CHRIST programme database cannot be reached right now, so I can't look that up. Please try again shortly, or contact the Admissions Office.",
-                           [], t.used, [], False, intent="data_unavailable")
+                           [], t.used, [], intent="data_unavailable")
     follow = t.followups or ([x.format(n=res.best.name) for x in NEXT[:3]] if res and res.best and not res.ambiguous else GENERIC.get(u.intent, DEFAULT_SUGGEST))
     final = _finish(reply)
     if composer is not None:
@@ -645,4 +759,4 @@ async def run_decision_agent(decider: DecisionsClient, history: list[dict], *, u
             nice = await composer.compose(history[-1]["content"], history, final, u.intent)
             if nice:
                 final = nice
-    return AgentResult(final, list(t.sources.values()), t.used, follow, t.demo, intent=u.intent)
+    return AgentResult(final, list(t.sources.values()), t.used, follow, intent=u.intent, agent=t.agent, cards=t.cards)

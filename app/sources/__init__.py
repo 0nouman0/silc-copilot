@@ -1,10 +1,13 @@
-"""Structured data sources for the agent. CATALOGUE_SOURCE = mysql | api | none (default: mysql when AGENT_DB_USER is set)."""
+"""Structured data sources for the agent. CATALOGUE_SOURCE = catalog | mysql | api | none.
+
+catalog (default when AGENT_DB_USER is set): the in-memory catalog built from the read-only replica (no per-request SQL).
+mysql: legacy per-request queries. api: HTTP adapter stub. none: no source (the app says the database cannot be reached)."""
 from __future__ import annotations
 
 import os
 
 from .api_source import ApiSource
-from .base import CatalogueSource, SourceUnavailable
+from .base import CatalogueSource, DataNotGranted, SourceUnavailable
 from .mysql_source import MySqlSource
 
 _override: CatalogueSource | None = None
@@ -30,9 +33,17 @@ def get_source() -> CatalogueSource | None:
     key = _env_key()
     if _cached is None or _cached[0] != key:
         choice = (os.getenv("CATALOGUE_SOURCE") or "").lower()
-        src = None if choice == "none" else ApiSource.from_env() if choice == "api" else MySqlSource.from_env()
+        if choice == "none":
+            src = None
+        elif choice == "api":
+            src = ApiSource.from_env()
+        elif choice == "mysql":
+            src = MySqlSource.from_env()
+        else:                                     # "catalog" or unset: the blueprint's in-memory catalog, when a database account is configured
+            from .catalog_source import CatalogSource   # lazy: the catalog package itself imports app.sources.base
+            src = CatalogSource() if (os.getenv("AGENT_DB_USER") and os.getenv("AGENT_DB_PASSWORD")) or choice == "catalog" else None
         _cached = (key, src)
     return _cached[1]
 
 
-__all__ = ["CatalogueSource", "SourceUnavailable", "get_source", "set_source"]
+__all__ = ["CatalogueSource", "DataNotGranted", "SourceUnavailable", "get_source", "set_source"]
