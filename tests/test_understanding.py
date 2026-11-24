@@ -84,7 +84,7 @@ def test_restrictions_and_negations_are_preserved(eng):
     ("bangalore only", dict(intent="programme_search", campus="Bangalore")),
     ("how do i apply", dict(intent="admission_process")),
     ("Good morning", dict(intent="greeting")),
-    ("is there a hostel at kengeri", dict(intent="other")),
+    ("is there a hostel at kengeri", dict(intent="facilities", corrected_message="is there a hostel at kengeri")),
 ])
 def test_informal_messages(eng, msg, want):
     got = interp(msg, eng).public()

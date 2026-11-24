@@ -63,7 +63,7 @@ _RX = {
     "fees_deadlines": re.compile(r"\b(fees?|tuition|cost|how much|last date|deadline|dates?|seats?|intake|vacanc\w*|when does|when do)\b", re.I),
     "eligibility": re.compile(r"\b(eligib\w*|can i (apply|get|join|do|take)|am i eligible|qualif\w*|criteria|minimum (marks|percentage)|my (marks|percentage|cgpa|score))\b|\b\d{2}(\.\d+)?\s?%", re.I),
     "apply_guide": re.compile(r"\b(how (do|to|can) i apply|apply|application process|admission process|selection|entrance|audition|interview|documents? (required|needed)|register)\b", re.I),
-    "campus_facilities": re.compile(r"\b(hostel|dining|mess|canteen|transport|bus|library|medical|scholarship|nri|international (student|admission|office)|anti[- ]?ragging|facilit\w*|sports|campus life)\b", re.I),
+    "campus_facilities": re.compile(r"\b(hostel|dining|mess|canteen|transport|bus|library|medical|scholarship|nri(?!\s+(?:fees?|tuition|cost))|international (student|admission|office)|anti[- ]?ragging|facilit\w*|sports|campus life)\b", re.I),
     "recommend": re.compile(r"\b(recommend|suggest|which (course|programme|program|degree)|suit(s|able)? me|best for me|help me (choose|pick|decide)|i('m| am) (interested|confused|not sure)|"
                             r"i (like|love|enjoy)|my (interest|passion)s?|not sure what|interested in|career (advice|guidance))\b", re.I),
     "program_qa": re.compile(r"\b(curriculum|syllabus|subjects?|specialis\w*|specializ\w*|structure|outcomes?|objectives?|placements?|brochure|compare|what will i (study|learn)|duration|about)\b", re.I),

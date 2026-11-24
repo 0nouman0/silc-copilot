@@ -229,7 +229,7 @@ def test_unrelated_questions_never_trigger_a_programme_search(client, conv):
         assert "search_programs" not in converse(client, [m])[0]["tools_used"], m
 
 
-def test_unclear_messages_get_a_natural_clarification_in_decisions_mode_and_reach_the_model_in_tools_mode(client, conv, monkeypatch):
+def test_unclear_messages_get_a_natural_clarification_and_hostel_is_answered_from_data_in_tools_mode(client, conv, monkeypatch):
     from tests.conftest import FakeProvider, text
     monkeypatch.setenv("AGENT_MODE", "decisions")
     r = converse(client, ["asdf qwer"])[0]
@@ -237,7 +237,7 @@ def test_unclear_messages_get_a_natural_clarification_in_decisions_mode_and_reac
     fake = FakeProvider([text("model answer")])
     monkeypatch.setenv("AGENT_MODE", "tools")
     monkeypatch.setattr("app.routers.api.get_llm_provider", lambda agent=None: fake)
-    assert converse(client, ["is there a hostel at kengeri"])[0]["reply"] == "model answer"                    # data-tool topics still go to the tool-calling agent
+    assert converse(client, ["is there a hostel at kengeri"])[0]["intent"] == "facilities"                    # hostel is answered from the campus facility records, not by the model
 
 
 # ---------------------------------------------------------------- the AI interpreter drives the same conversational answers

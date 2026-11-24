@@ -175,3 +175,10 @@ programme facts, admission process, lateral entry, campus, scholarship, clarific
   a short recap), what has been `asked` (a clarifying question is not asked twice), the quick replies last `suggested`. Unrelated questions (statistics, definitions, small talk, comparisons) never change or erase the filters.
 * **AI wording is optional:** composable answers can be reworded by a chat model; every number and link must already be in the verified text or the original is kept; two misses in a row switch the step off for two minutes.
 * `AGENT_MODE=tools` sends only questions the orchestrator does not recognise (for example hostel facilities) to the tool-calling model, which receives the same state summary.
+
+## Campus facilities (hostel, dining, library, transport...)
+
+`facilities` is its own intent (`understanding.is_facility_question`): hostel/accommodation/dining/clinic/Wi-Fi words always mean the campus; library/lab/transport/sports words only when no programme is named
+(they also occur in programme names). `dialog._facility_reply` quotes the campus facility records (`campus_fecilities`) exactly, filtered by campus and facility, and never estimates: no entry, no stated fee, or a table
+the database account cannot read (missing SELECT grant, see `docs/agent_ro_grants.sql`) is said plainly with the admissions contacts. Facility questions never change the programme filters.
+Composed (AI-worded) answers never open with a greeting or "thanks for asking": `composer.strip_greeting` removes it even if a model ignores the prompt.

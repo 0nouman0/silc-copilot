@@ -203,7 +203,7 @@ def test_unrelated_questions_fall_through_to_the_model(client, eng, monkeypatch)
     monkeypatch.setenv("AGENT_MODE", "decisions")
     monkeypatch.setattr("app.routers.api.get_decider", lambda: FakeDecider(ans("hostel")))
     r = converse(client, ["is there a hostel at kengeri"])[0]
-    assert r["intent"] == "hostel"                                                        # not hijacked by the programme search
+    assert r["intent"] == "facilities"                                                    # not hijacked by the programme search
 
 
 # ---------------------------------------------------------------- duplicate submissions and loops

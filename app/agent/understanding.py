@@ -35,7 +35,7 @@ from .smalltalk import smalltalk_kind
 log = logging.getLogger("understanding")
 
 INTENTS = ("greeting", "smalltalk", "general_conversation", "programme_count", "concept_question", "comparison", "programme_overview", "programme_search", "availability_check",
-           "programme_info", "admission_process", "lateral_entry", "campus_info", "scholarship", "selection", "clarification_needed", "unsupported", "other")
+           "programme_info", "admission_process", "lateral_entry", "campus_info", "facilities", "scholarship", "selection", "clarification_needed", "unsupported", "other")
 
 # ------------------------------------------------------------------------------------------------ vocabulary
 FACT_PATTERNS: list[tuple[str, re.Pattern]] = [
@@ -60,6 +60,15 @@ BROWSE_RX = re.compile(r"\b(show|list|browse|see|view|display)\b|\boptions\b|\ba
 OVERVIEW_RX = re.compile(r"\btell me (more )?about\b|\b(more )?(info|information|details?) (on|about|of)\b|\boverview\b|\bdescribe\b|\b(want|like) to know about\b|\bknow about\b", re.I)
 AVAIL_RX = re.compile(r"\bdo you (have|offer)\b|\bis there\b|\b(is|are) .{1,40}(available|offered)\b|\bdoes (christ|the university|it) (have|offer)\b|\bany .{1,25}(programmes?|courses?)\b", re.I)
 CAMPUS_RX = re.compile(r"\b(which|what) (campus|campuses|city|location)\b|\bwhere (is|are) (it|this|that|they|the .{1,30}) (offered|located|available)\b|\bcampus(es)? (list|options)\b|\bwhere can i (study|do)\b", re.I)
+# campus life: hostel, dining, library, transport... answered from the campus facility records, never from a programme search
+FACILITY_STRONG = re.compile(r"\b(hostels?|accommodations?|dormitor(?:y|ies)|residences?|dining|mess|canteens?|cafeterias?|food court|shuttle|clinic|infirmary|wi-?fi|facilit(?:y|ies)|infrastructure)\b", re.I)
+FACILITY_WEAK = re.compile(r"\b(libraries|library|laborator(?:y|ies)|labs?|transport\w*|bus(?:es)?|medical|sports?|gym|auditorium)\b", re.I)   # also part of programme names, so only without a programme in the sentence
+
+
+def is_facility_question(text: str, programme_words: bool = False) -> bool:
+    return bool(FACILITY_STRONG.search(text) or (FACILITY_WEAK.search(text) and not programme_words))
+
+
 SCHOLAR_RX = re.compile(r"\bscholarships?\b|\bfinancial aid\b|\bfee concession\b|\bwaiver\b", re.I)
 # entry route: synonyms of lateral entry in applicants' words (the university's own term is "Lateral Entry")
 _LATERAL_RX = re.compile(r"\blateral\b|direct(ly)?\s+(admission\s+)?((to|into|in)\s+)?(the\s+)?(2nd|second|3rd|third)\s+(year|yr)|(2nd|second)[- ]?(year|yr)\s+(admission|entry|direct|joining|join)|"
@@ -171,8 +180,12 @@ def normalise_case(text: str) -> tuple[str, bool]:
     return text, False
 
 
+_PLAIN = frozenset("there their these those three other another about which while where when whose whom whole after before again could would should might shall until since being been "
+                   "hostel hostels dining library transport shuttle clinic".split())      # ordinary English words are never 'corrected' into a different ordinary word ("is there" -> "is where")
+
+
 def _known(word: str, tax: Taxonomy) -> bool:
-    return word in tax.spell_vocab or tax.known_words.get(word, 0) >= 3
+    return word in _PLAIN or word in tax.spell_vocab or tax.known_words.get(word, 0) >= 3
 
 
 def correct_word(word: str, prev: str | None, nxt: str | None, tax: Taxonomy) -> str | None:
@@ -224,7 +237,7 @@ class Interpretation(BaseModel):
     original_message: str
     corrected_message: str
     intent: Literal["greeting", "smalltalk", "general_conversation", "programme_count", "concept_question", "comparison", "programme_overview", "programme_search", "availability_check",
-                    "programme_info", "admission_process", "lateral_entry", "campus_info", "scholarship", "selection", "clarification_needed", "unsupported", "other"]
+                    "programme_info", "admission_process", "lateral_entry", "campus_info", "facilities", "scholarship", "selection", "clarification_needed", "unsupported", "other"]
     smalltalk: str | None = None
     scope: Literal["university", "degree", "programme", "none"] = "none"            # what the question is about: the whole university, a degree family, or a programme
     requested_information: list[str] = Field(default_factory=list)
@@ -338,6 +351,8 @@ def _enrich(info: Interpretation, corrected: str) -> Interpretation:
     elif info.intent in ("admission_process", "lateral_entry"):
         info.scope, info.requires_programme_search = ("degree" if info.has_filter else "university"), True
         info.requested_information = info.requested_information or ["admission_requirements", "eligibility", "application_process"]
+    elif info.intent == "facilities":
+        info.scope = "university"
     elif info.intent in ("programme_info", "campus_info", "scholarship"):
         info.scope = "programme" if not info.has_filter else "degree"
         info.requested_information = info.requested_information or ([info.requested_info] if info.requested_info else [])
@@ -378,6 +393,10 @@ def local_interpret(text: str, cat: Catalog | None, tax: Taxonomy, *, pending: b
         info.intent = "programme_count"
     elif COMPARE_RX.search(corrected) and len(degrees) >= 2:
         info.intent = "comparison"
+    elif is_facility_question(corrected, bool(info.degree_type or info.concepts or info.hard_words)) and not ADMISSION_RX.search(corrected):
+        info.intent = "facilities"
+        info.requested_info = None
+        info.irrelevant_tokens = []
     elif CONCEPT_RX.search(corrected) and terms and not fact and not listy and not ADMISSION_RX.search(corrected) and not (entry == "lateral" and re.search(r"\b(available|offer\w*|have|in|for)\b", corrected, re.I) and len(degrees) + len(info.concepts) > 0 and "difference" not in corrected.lower()):
         info.intent = "concept_question"
     elif CONCEPT_RX.search(corrected) and not terms and not fact and not listy and (info.concepts or info.hard_words) and not info.degree_type and not ADMISSION_RX.search(corrected):
@@ -456,7 +475,7 @@ SYSTEM = """You are the language-understanding module of a university admissions
 Read the applicant's latest message (spelling mistakes, abbreviations, voice-to-text errors, ALL CAPS and short follow-ups are normal) and reply with ONE JSON object and nothing else:
 {"corrected_message": "<same meaning, spelling fixed>",
  "intent": one of [greeting, smalltalk, general_conversation, programme_count, concept_question, comparison, programme_overview, programme_search, availability_check, programme_info,
-                   admission_process, lateral_entry, campus_info, scholarship, selection, clarification_needed, unsupported, other],
+                   admission_process, lateral_entry, campus_info, facilities (hostel, dining, library, transport, medical, labs, Wi-Fi), scholarship, selection, clarification_needed, unsupported, other],
  "requested_info": one of [eligibility, fees, curriculum, dates, selection, placements, apply, details] or null,
  "requested_information": ["<what the user wants to know, e.g. eligibility, application_process>"],
  "requires_programme_search": true|false,

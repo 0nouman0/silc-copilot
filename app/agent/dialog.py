@@ -31,7 +31,8 @@ from . import conversation as conv
 from . import knowledge as K
 from .orchestrator import AgentResult
 from .smalltalk import ACKS, BYES, GREETING_SEQUENCE, THANKS, greeting_reply, pick, smalltalk_kind, words as _words  # noqa: F401  (re-exported)
-from .understanding import FACT_PATTERNS, Interpretation, interpret, local_interpret, taxonomy_for
+from ..sources.text import tidy
+from .understanding import ADMISSION_RX, FACT_PATTERNS, Interpretation, interpret, is_facility_question, local_interpret, taxonomy_for
 
 log = logging.getLogger("dialog")
 
@@ -328,6 +329,9 @@ def respond(history: list[dict], prior_state: dict | None = None, profile=None) 
     res: AgentResult | None = None
     fact = iv.requested_info
     intent = iv.intent
+    if intent in ("other", "campus_info", "availability_check", "clarification_needed", "programme_info") and is_facility_question(text, bool(iv.degree_type or iv.concepts or iv.hard_words)) \
+            and not ADMISSION_RX.search(text):
+        intent = "facilities"                            # hostel / dining / library... is about the campus, whichever reading the interpreter gave it
     if named is not None and intent == "programme_search" and not fact and next((rx for n, rx in FACT_PATTERNS if n == "details" and rx.search(text)), None):
         intent = "programme_overview"                    # "tell me about <a programme named in full>" is a question about that programme, not a search
     if intent == "clarification_needed" and iv.clarification:
@@ -353,6 +357,8 @@ def respond(history: list[dict], prior_state: dict | None = None, profile=None) 
         res = _lateral_reply(cat, history, s, iv, q, profile)
     elif intent == "admission_process":
         res = _admission_reply(cat, history, s, iv, profile)
+    elif intent == "facilities":
+        res = _facility_reply(cat, s, q, text)
     elif intent == "campus_info":
         res = _campus_reply(cat, history, s, q)
     elif intent == "scholarship":
@@ -541,6 +547,13 @@ def _availability_reply(cat: Catalog, history: list[dict], s: State, q: Query, i
     if unknown and groups:                                  # a subject the records don't know can't be confirmed by the rest of the filters
         said = ", ".join(f"\u201c{t}\u201d" for t in unknown[:3])
         return _result(f"I can't find {said} among the {label} programmes in the CHRIST records, so I can't say it's offered.", s, [], intent="availability_check", used=used or ["search_programs"])
+    soft = [w for w in (iv.soft_words if iv else []) if len(w) > 3]
+    if soft and groups:                                     # "Library Science": science matches many programmes, but nothing is about a library
+        pool = " ".join(f"{g.rep.name} {g.rep.field} {g.rep.specialization or ''} {' '.join(g.rep.subjects)}".lower() for g in groups[:60])
+        missing = [w for w in soft if w.lower()[:5] not in pool]
+        if len(missing) == len(soft):
+            said = " ".join(f"“{w}”" for w in missing[:3])
+            return _result(f"I can't find a programme about {said} among the {label} programmes in the CHRIST records, so I can't say it's offered.", s, [], intent="availability_check", used=used or ["search_programs"])
     text = K.availability_text(cat, groups, label)
     if groups:
         s.last_ids, s.pending, s.shown = tuple(g.rep.id for g in groups[:30]), None, 0
@@ -903,6 +916,81 @@ def _campus_reply(cat: Catalog, history: list[dict], s: State, q: Query) -> Agen
         parts = [f"{c} ({n} option{'s' if n != 1 else ''})" for c, n in sorted(per.items(), key=lambda x: -x[1])]
         text = f"The {label} options are offered at {K.joined(parts)}."
     return _result(text, s, [], intent="campus_info", sources=[_ref(gg.rep) for gg in groups[:3]] or None, used=["search_programs"], compose=True)
+
+
+_FACILITY_GROUPS: tuple[tuple[str, re.Pattern, tuple[str, ...]], ...] = (
+    ("hostel", re.compile(r"hostel|accommodation|dormitor|residen", re.I), ("hostel", "accommodation", "residence", "residential", "dormitor")),
+    ("dining", re.compile(r"dining|\bmess\b|canteen|cafeteria|food", re.I), ("dining", "mess", "canteen", "cafeteria", "food")),
+    ("library", re.compile(r"librar", re.I), ("library", "libraries")),
+    ("transport", re.compile(r"transport|\bbus(es)?\b|shuttle", re.I), ("transport", "bus", "shuttle")),
+    ("medical", re.compile(r"medical|clinic|infirmary", re.I), ("medical", "clinic", "infirmary", "health")),
+    ("sports", re.compile(r"sport|\bgym\b|ground", re.I), ("sport", "gym", "ground")),
+    ("labs", re.compile(r"\blabs?\b|laborator", re.I), ("lab", "laborator")),
+    ("wifi", re.compile(r"wi-?fi|internet|\bit services\b", re.I), ("wi-fi", "wifi", "internet", "it services")),
+)
+_FEE_WORDS = re.compile(r"\bfees?\b|\bcost\b|\bcharges?\b|\bprice\b|\brent\b|how much", re.I)
+_MONEY = re.compile(r"₹|\brs\.?\s*\d|\binr\b|\bfee\b|\bfees\b|per (month|year|annum|semester|term)|\d[\d,]{3,}", re.I)
+
+
+def _facility_items(cat: Catalog) -> list:
+    out = []
+    for items in cat.topics.values():
+        for it in items:
+            if it.provenance is None or it.provenance.table == "campus_fecilities":
+                out.append(it)
+    return out
+
+
+def _campus_ids_for(cat: Catalog, name: str | None) -> set[int] | None:
+    if not name:
+        return None
+    key = [w for w in re.findall(r"[a-z]+", name.lower()) if w not in ("campus", "christ", "bangalore", "bengaluru", "the")]
+    ids = {c.id for c in cat.campuses.values() if (any(w in c.name.lower() for w in key) if key else any(x in c.name.lower() for x in ("bangalore", "bengaluru")))}
+    return ids or None
+
+
+def _clip(text: str, n: int = 700) -> str:
+    text = tidy(text).strip()
+    if len(text) <= n:
+        return text
+    cut = text[:n]
+    stop = max(cut.rfind(". "), cut.rfind("\n"))
+    return (cut[:stop + 1] if stop > n // 2 else cut.rstrip()) + " …"
+
+
+def _facility_reply(cat: Catalog, s: State, q: Query, text: str) -> AgentResult:
+    """Hostel, dining, library, transport... come from the campus facility records, quoted as stored. Nothing is estimated: a missing entry, a missing fee or a table the database account cannot read is said plainly."""
+    wanted_groups = [g for g in _FACILITY_GROUPS if g[1].search(text)]
+    generic = not wanted_groups
+    label = K.joined([g[0] for g in wanted_groups]) if wanted_groups else "campus facilities"
+    words = tuple(w for g in wanted_groups for w in g[2])
+    asked_fee = bool(_FEE_WORDS.search(text))
+    campus_ids = _campus_ids_for(cat, q.campus)
+    scope = f" at {K.joined(sorted({cat.campuses[i].name for i in campus_ids}))}" if campus_ids else ""
+    items = _facility_items(cat)
+    src = [SourceRef(doc_id="catalogue", title="CHRIST campus facilities")]
+    if not items:                                         # the build could not read the facilities table (no SELECT grant) or it is empty
+        t = (f"I can't read the campus facility records at the moment, so I can't tell you about {label}{scope} from the database and I won't guess. "
+             f"The admissions office can confirm it.\n\n{_contacts(campus_ids, cat)}")
+        return _result(t, s, [], intent="facilities", sources=src, used=["get_campus_facilities"], skill="campus_facilities")
+    rows = [it for it in items if (campus_ids is None or it.campus_id in campus_ids or it.campus_id is None)
+            and (generic or any(w in f"{it.title} {it.topic}".lower() for w in words))]
+    if not rows:
+        t = (f"The database has no {label} entry{scope}, so I can't say. The admissions office can tell you.\n\n{_contacts(campus_ids, cat)}")
+        return _result(t, s, [], intent="facilities", sources=src, used=["get_campus_facilities"], skill="campus_facilities")
+    rows = sorted(rows, key=lambda it: (it.campus_id or 0, it.title))[:6]
+    blocks = []
+    for it in rows:
+        cm = cat.campuses.get(it.campus_id) if it.campus_id is not None else None
+        blocks.append(f"**{cm.name + ' · ' if cm else ''}{it.title}**\n{_clip(it.text)}" + (f"\nMore: {it.link}" if it.link else ""))
+    lead = f"Here is what the CHRIST database records about {label}{scope}:" if not generic else f"These are the campus facilities recorded in the CHRIST database{scope}:"
+    tail = ""
+    if asked_fee:
+        if any(_MONEY.search(it.text) for it in rows):
+            tail = "\n\nFees and charges are shown exactly as stored above; please confirm the current amounts with the admissions office."
+        else:
+            tail = f"\n\nThese entries do not state a fee, so I can't give {label} charges. The admissions office can.\n\n{_contacts(campus_ids or {it.campus_id for it in rows if it.campus_id}, cat)}"
+    return _result(lead + "\n\n" + "\n\n".join(blocks) + tail, s, [], intent="facilities", sources=src, used=["get_campus_facilities"], skill="campus_facilities")
 
 
 def _scholarship_reply(cat: Catalog, history: list[dict], s: State, q: Query, profile) -> AgentResult:
